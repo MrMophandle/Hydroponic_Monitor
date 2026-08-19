@@ -1,0 +1,13 @@
+# Target labels
+ bootloader
+# Source files and their labels
+/Users/ryanperkowski/Documents/PlatformIO/Projects/HydroponicMonitor/.pio/build/esp32-s3-devkitm-1/CMakeFiles/bootloader
+/Users/ryanperkowski/Documents/PlatformIO/Projects/HydroponicMonitor/.pio/build/esp32-s3-devkitm-1/CMakeFiles/bootloader.rule
+/Users/ryanperkowski/Documents/PlatformIO/Projects/HydroponicMonitor/.pio/build/esp32-s3-devkitm-1/CMakeFiles/bootloader-complete.rule
+/Users/ryanperkowski/Documents/PlatformIO/Projects/HydroponicMonitor/.pio/build/esp32-s3-devkitm-1/bootloader-prefix/src/bootloader-stamp/bootloader-install.rule
+/Users/ryanperkowski/Documents/PlatformIO/Projects/HydroponicMonitor/.pio/build/esp32-s3-devkitm-1/bootloader-prefix/src/bootloader-stamp/bootloader-mkdir.rule
+/Users/ryanperkowski/Documents/PlatformIO/Projects/HydroponicMonitor/.pio/build/esp32-s3-devkitm-1/bootloader-prefix/src/bootloader-stamp/bootloader-download.rule
+/Users/ryanperkowski/Documents/PlatformIO/Projects/HydroponicMonitor/.pio/build/esp32-s3-devkitm-1/bootloader-prefix/src/bootloader-stamp/bootloader-update.rule
+/Users/ryanperkowski/Documents/PlatformIO/Projects/HydroponicMonitor/.pio/build/esp32-s3-devkitm-1/bootloader-prefix/src/bootloader-stamp/bootloader-patch.rule
+/Users/ryanperkowski/Documents/PlatformIO/Projects/HydroponicMonitor/.pio/build/esp32-s3-devkitm-1/bootloader-prefix/src/bootloader-stamp/bootloader-configure.rule
+/Users/ryanperkowski/Documents/PlatformIO/Projects/HydroponicMonitor/.pio/build/esp32-s3-devkitm-1/bootloader-prefix/src/bootloader-stamp/bootloader-build.rule
