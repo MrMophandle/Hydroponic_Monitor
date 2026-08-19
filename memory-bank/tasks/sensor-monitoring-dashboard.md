@@ -626,7 +626,10 @@ Phase 1 — foundation and test harness:
       `reading_store_core`; holds no buffer arithmetic of its own
 - [ ] `test/test_reading_store/test_reading_store.c` — exercises `reading_store_core`
 - [ ] `include/wifi_secrets.h.example` — committed template
-- [ ] `.gitignore` — **extend**: ignore `include/wifi_secrets.h`; untrack `build/`
+- [ ] `.gitignore` — **extend**: ignore `include/wifi_secrets.h`; ignore `.DS_Store`; untrack
+      both `build/` (415 files of CMake/Ninja/IDF artifacts) and `.DS_Store` via
+      `git rm -r --cached`. Neither is deleted from disk. Confirmed with the user 2026-08-19;
+      `.pio/` is already ignored, so this makes repo hygiene consistent.
 
 Phase 2 — sensor drivers:
 - [ ] `src/idf_component.yml` — declares `espressif/onewire_bus`, `espressif/ds18b20`
