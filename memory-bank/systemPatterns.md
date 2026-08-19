@@ -2,10 +2,13 @@
 
 This file documents the architectural patterns, design patterns, and system structure used in this project. It helps developers understand the system's organization and maintain consistency when extending functionality.
 
-> **Status (2026-08-19)**: greenfield. No architecture exists yet — `src/main.c` is an empty
-> `app_main()`. The Guiding Principles below are the *starting* conventions for an ESP-IDF
-> firmware project; confirm or replace them during the first `/bmb:creative` or `/bmb:plan` pass,
-> and fill the empty sections as real structure appears.
+> **Status (2026-08-19)**: Phase 1 of sensor-monitoring-dashboard landed. Only
+> `lib/reading_store_core/` (the pure ring buffer) exists in code today. The split-module
+> pattern below — isolating pure logic from a device-only FreeRTOS wrapper — is the
+> **convention Phase 1 establishes**; the `reading_store` locking wrapper itself, and every
+> other component in the architecture diagram below besides `reading_store_core`, is **planned,
+> not yet built** (deferred to Phase 3+, once a concurrent writer exists). Do not treat this
+> file as evidence those files exist — check `lib/`/`src/` directly.
 
 ## Guiding Principles
 
@@ -29,20 +32,42 @@ This file documents the architectural patterns, design patterns, and system stru
 
 ### High-Level Architecture
 ```
-[To be defined — no components exist yet.]
+Target shape (Sensor Monitoring, Hydroponic Reservoir) — ONLY reading_store_core exists
+today (Phase 1). Everything else below is the planned Phase 2-6 shape, not yet built:
 
-Expected shape for a hydroponic monitor (confirm during planning):
-
-┌──────────────┐    ┌───────────────┐    ┌──────────────┐    ┌─────────────┐
-│   Sensors    │───▶│   Drivers     │───▶│  Monitoring  │───▶│  Transport  │
-│ (I2C/ADC/1W) │    │   (lib/)      │    │     Task     │    │ (Wi-Fi/MQTT)│
-└──────────────┘    └───────────────┘    └──────┬───────┘    └─────────────┘
-                                                │
-                                                ▼
-                                         ┌──────────────┐
-                                         │  Actuators   │
-                                         │  (optional)  │
-                                         └──────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│ Application Layer (src/)                                      │
+│  ┌─────────────────────────────────────────────────────────┐ │
+│  │ app_main()  ← wiring; returns after task launch         │ │
+│  │ sampler.c   ← periodic reading & TWDT subscription      │ │
+│  │ wifi_conn.c ← station mode, reconnect, mDNS (Phase 4)  │ │
+│  │ http_api.c  ← /api/now, /api/history (Phase 5)         │ │
+│  └─────────────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────────────┘
+         │
+         └─────────────┬────────────────┬────────────────┐
+                       │                │                │
+        ┌──────────────▼─┐  ┌───────────▼──┐  ┌────────▼────────┐
+        │ reading_store  │  │ sensor_hub   │  │ Drivers         │
+        │ (mutex wrapper)│──│ (sampler     │──│ (lib/)          │
+        │ (device-only)  │  │  failure     │  │ bh1750 (I2C)    │
+        │  NOT BUILT     │  │  handling)   │  │ ds18b20 (1-Wire)│
+        │  (planned)     │  │  NOT BUILT   │  │ level_switches  │
+        └────────┬────────┘  │  (planned)   │  │ (GPIO)          │
+                 │           └──────────────┘  │ NOT BUILT       │
+                 │                              │ (planned)       │
+                 │                              └─────────────────┘
+        ┌────────▼─────────────┐
+        │ reading_store_core   │  ◄─── BUILT (Phase 1), the only real component today
+        │ (pure ring buffer,   │
+        │  downsample logic;   │
+        │  NO FreeRTOS)        │ ◄─── Host-testable: [env:native]
+        │                      │
+        │ • 2,880-entry ring   │
+        │ • push/count/is_full │
+        │ • downsample to      │
+        │   caller buffer      │
+        └──────────────────────┘
 ```
 
 ### Component Responsibilities
@@ -60,8 +85,46 @@ Expected shape for a hydroponic monitor (confirm during planning):
 
 ## Design Patterns Used
 
-[None recorded yet. Document each pattern as it is introduced, with a `path/to/file.c:line`
-anchor.]
+### Pure-Logic / Device-Only Split
+
+**Problem**: A module that owns FreeRTOS primitives (`SemaphoreHandle_t`, task wiring, etc.) cannot
+compile or run in a `[env:native]` host environment. Yet the module's core business logic (ring
+buffer arithmetic, state machine, downsampling algorithm) is pure and testable off-device. How do
+you make logic testable without also making it capable of running without hardware?
+
+**Solution**: Split the module into two: a pure half with zero FreeRTOS dependency, and a thin
+device-only wrapper that owns the synchronization primitive and delegates every operation to the
+pure half. The pure half lives in `lib/<name>_core/` and is host-compilable; the wrapper lives in
+`lib/<name>/` (or `src/`) and depends on the core.
+
+**Implementation**:
+- `lib/reading_store_core/` (`reading_store_core.h/c`) — **BUILT, Phase 1**: the ring buffer
+  with static allocation, no locks, no FreeRTOS headers. All 2,880 × 20-byte entries statically
+  declared. (File is short — read it directly for line-level detail rather than trusting a
+  pinned line range here, since it will shift as the module grows.)
+- `lib/reading_store/` (`reading_store.h/c`) — **NOT YET BUILT** (deferred to Phase 3+, once
+  the sampler task is the concurrent writer that actually needs a lock). When built, it is
+  intended to be a thin device-only wrapper owning a `SemaphoreHandle_t`, delegating every
+  operation to `reading_store_core` with zero arithmetic of its own — that is the design intent
+  this pattern documents, not yet a fact about the codebase.
+- `test/test_reading_store/test_reading_store.c` — **BUILT, Phase 1**: exercises
+  `reading_store_core` on the host; uses `[env:native]` which links `esp_shim.h` instead of
+  FreeRTOS.
+
+**Trade-offs**:
+- **Gain**: Logic testable without hardware. The 11 `reading_store_core` tests (Phase 1) run in
+  CI/locally without a board attached. Downsampling, ring wrap, and count logic all have
+  explicit verification.
+- **Cost**: Slight verbosity — the wrapper delegates every operation (one line each). Acceptable
+  because the wrapper is thin (< 50 SLOC) and the core is stable (ring arithmetic is well-known).
+
+**When to reuse**: Whenever a module has both pure logic and FreeRTOS coupling:
+- A state machine (pure) with a queue-owned task wrapper (device-only).
+- A JSON serializer (pure) with an HTTP chunked-send wrapper (device-only).
+- A sensor-read-history analyzer (pure) with a sampler-task wrapper (device-only).
+
+**Scope**: This pattern is specific to embedded firmware where on-device testing requires hardware
+but off-device testing of logic is feasible.
 
 ## Integration Patterns
 
@@ -124,17 +187,36 @@ anchor.]
 ### Test Framework & Style
 - **Framework**: Unity (bundled with PlatformIO / ESP-IDF)
 - **Assertion style**: `TEST_ASSERT_*` macros
-- **Mocking approach**: [To be decided.] The Hardware Abstraction principle above is what makes
-  this possible — inject a driver function-pointer struct (or link a stub implementation of the
-  driver header in a `native` test environment) so logic is testable without a board.
+- **Mocking approach**: Link-time stub substitution in `[env:native]`. When `sensor_hub` depends on
+  the three driver *headers* (`bh1750.h`, `ds18b20_probe.h`, `level_switches.h`), the device build
+  links the real implementations; the native test environment links stub implementations from
+  `test/native/stubs/` instead. No function-pointer vtables, no runtime indirection — the device
+  build pays zero cost for testability. See `test/native/esp_shim.h` for the ESP-IDF type/macro
+  shim that makes pure logic compilable on the host.
 
 ### Test Scope Preferences
-- **Emphasis**: [To be decided — see the hardware constraint in `techContext.md` § Test Execution
-  Strategy. Today the only test environment requires a connected board, which blocks unattended
-  TDD. Adding a `[env:native]` for hardware-free logic tests is the recommended first move.]
-- **Typical test-to-source ratio**: [To be established]
-- **What is NOT typically tested**: register-level driver code that only a real peripheral can
-  exercise; IDF framework boilerplate
+- **Emphasis**: Unit-heavy on pure logic (implemented in `lib/<name>_core/`). Ring buffer arithmetic,
+  state machines, JSON serialization, and sampling failure handling all carry defect risk and must
+  have explicit coverage. Peripheral drivers (I2C register transactions, 1-Wire timing, GPIO
+  polling) cannot be meaningfully tested without the physical bus and are verified manually at the
+  bench instead. When a module has a pure half (per the Pure-Logic / Device-Only Split pattern),
+  the core is 100% unit-tested on `[env:native]`; the wrapper is device-only and not host-tested.
+- **Typical test-to-source ratio**: ~0.5 (target: ~1 test per 2 SLOC of pure logic). Phase 1 has
+  11 tests for ~60 SLOC of `reading_store_core`, a ratio of 0.18; Phase 2 will add ~8 tests for
+  `level_switches` (~80 SLOC); overall aim is to reach ~0.4–0.5 across all pure modules. Driver
+  stubs and test harness boilerplate (esp_shim.h, stub implementations) are not counted.
+- **What is NOT typically tested**: 
+  - Peripheral register transactions (BH1750 I2C, DS18B20 1-Wire CRC, GPIO edge timing)
+  - Wi-Fi association, reconnection backoff, mDNS registration (require a real AP)
+  - `esp_http_server` request routing (framework behavior; covered by manual `curl` checks)
+  - The embedded HTML/CSS/JS (no browser test harness in scope for v1)
+  - FreeRTOS primitives themselves (task scheduling, semaphore fairness) — assumed correct from the IDF
+  
+  Compensation: Phase-specific manual hardware verification steps are documented in
+  `tasks/sensor-monitoring-dashboard.md` § Per-Phase Test Guidance. A one-shot sensor read at
+  boot (Phase 2), ring filling across hours (Phase 3), Wi-Fi reconnection after AP reboot (Phase 4),
+  and HTTP endpoint verification with `curl` (Phase 5) are all manual checks that exercise the
+  untested seams.
 
 <!-- AUTO-MANAGED: c4-architecture-start -->
 ## C4 Architecture
@@ -154,6 +236,23 @@ To populate this section, run `/bmb:c4`. The command builds a complete bottom-up
 <!-- AUTO-MANAGED: c4-architecture-end -->
 
 ## Recent Architecture Changes
+
+### 2026-08-19 - Phase 1: Pure-Logic / Device-Only Split Pattern Introduced
+- **What Changed**: `lib/reading_store_core/` (pure ring buffer + downsample, no FreeRTOS) is
+  now built and host-tested. It is the FIRST half of the intended Pure-Logic/Device-Only Split
+  pattern; the second half (`lib/reading_store/`, a thin FreeRTOS-mutex wrapper) is **not yet
+  built** — deferred until a concurrent writer (the sampler task, Phase 3+) actually needs a
+  lock. This pattern enables host-testable logic in `[env:native]` while keeping the
+  not-yet-written device-only concerns isolated when they do land.
+- **Reason**: Prerequisite for unattended TDD in CI. A module owning FreeRTOS primitives cannot
+  compile in a host environment; splitting isolates the testable arithmetic from the
+  device-specific coupling. This pattern is intended to repeat for `sensor_hub` (sampler
+  failure handling) and `reading_json` (HTTP chunked-send wrapper) in later phases.
+- **Trade-offs**: Slight verbosity in the wrapper (delegation boilerplate), to be paid when the
+  wrapper is actually written, in exchange for a host-testable core available now.
+- **Affected Components**: `lib/reading_store_core/` (built), test harness
+  (`test/native/esp_shim.h`, `[env:native]`, built). `lib/reading_store/` is NOT an affected
+  component yet — it doesn't exist.
 
 ### 2026-08-19 - Memory bank initialized
 - **What Changed**: Starting conventions recorded for an empty ESP-IDF scaffold

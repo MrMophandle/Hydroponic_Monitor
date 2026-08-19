@@ -2,9 +2,13 @@
 
 This file documents the technology stack, infrastructure, and tooling used in this project. It serves as a reference for understanding technical decisions and helps maintain consistency across development phases.
 
-> **Status (2026-08-19)**: greenfield. The repository is a freshly generated PlatformIO + ESP-IDF
-> scaffold — `src/main.c` contains only an empty `app_main()`. Everything below that is marked
-> `[To be determined]` should be filled in as the first features land.
+> **Status (2026-08-19)**: Phase 1 complete. Board configuration corrected to actual hardware
+> (N16R8: 16 MB flash, 8 MB PSRAM), platform pinned to `espressif32@6.9.0` (ESP-IDF 5.3.1),
+> and `[env:native]` host environment added for pure-logic testing. `reading_store_core` (the
+> pure ring-buffer half only — the locking wrapper is deferred) implemented with 11 passing
+> host tests (`pio test -e native`); the device build (`pio run -e esp32-s3-devkitm-1`) compiles
+> clean but nothing in `src/` calls the new module yet, so "verified on device" means the build
+> succeeds, not that the module has been exercised on hardware.
 
 ## Component Structure
 
@@ -77,17 +81,28 @@ pio run --target menuconfig
 
 ### Testing
 ```bash
-# Run the PlatformIO test suite on-device
+# Run logic tests on the host (no hardware required)
+pio test -e native
+
+# Verbose host test output
+pio test -e native -v
+
+# Run the PlatformIO test suite on-device (ESP32-S3 board must be connected)
 pio test -e esp32-s3-devkitm-1
 
-# Verbose test output
+# Verbose device test output
 pio test -e esp32-s3-devkitm-1 -v
 ```
 
-> **Note**: `test/` currently holds only the generated README — there are no tests yet. The first
-> `/bmb:build` task must establish the Unity test harness before TDD can be enforced. On-device
-> testing requires the board to be connected; a native test environment can be added to
-> `platformio.ini` for host-runnable logic tests if hardware-free unit testing is wanted.
+> **Note**: Pure-logic modules (ring buffer, state machines, JSON serialization) are tested on
+> the host via `[env:native]`. This environment compiles with `test/native/esp_shim.h` (ESP-IDF
+> type/macro shims) and stubs from `test/native/stubs/` for driver headers, allowing 100% of pure
+> logic to be verified without a board.
+> 
+> Peripheral drivers and device-specific behavior (I2C register timing, Wi-Fi association, HTTP
+> chunked streaming) require the physical board and are tested on `esp32-s3-devkitm-1` (or
+> verified manually at the bench). Per-phase hardware verification steps are documented in
+> `tasks/sensor-monitoring-dashboard.md` § Per-Phase Test Guidance.
 
 ### Linting / Static Analysis
 ```bash
@@ -106,18 +121,25 @@ The single home for how this project's tests run.
 ### Test Running Strategy
 - [x] Always run from project root (`pio test` resolves `platformio.ini` from there)
 - [ ] Can run per-component safely
-- [x] Tests require special environment setup — **hardware**: an ESP32-S3 DevKitM-1 must be
-      connected over USB for the default environment. This means the test suite is **not**
-      runnable in CI or by an unattended agent as configured today.
+- [x] **Pure logic tests are now runnable in CI/unattended**: `pio test -e native` compiles and
+      runs on the host without any hardware. All ring buffer, state machine, and serialization
+      tests execute here.
+- [x] **Device-specific tests require hardware**: `pio test -e esp32-s3-devkitm-1` requires an
+      ESP32-S3 board connected over USB. Currently unused (Phase 1 has no device tests); will be
+      used for Wi-Fi, HTTP, and timing-dependent features in later phases.
 
 ### Test Discovery
 - [x] Tests are automatically discovered — PlatformIO collects test suites from `test/`,
       one subdirectory per suite (`test/test_<name>/`)
-- Naming: `test/test_<suite>/test_<suite>.c` with Unity `setUp`/`tearDown`/`RUN_TEST`
+- Naming convention: `test/test_<suite>/test_<suite>.c` with Unity `setUp`/`tearDown`/`RUN_TEST`
+- **Host-testable logic**: Tests in `test/test_<name>/test_<name>.c` that exercise pure modules
+  (those with no FreeRTOS includes) are auto-discovered for `[env:native]` and run on the host.
+- **Device tests** (future phases): Tests that depend on Wi-Fi, I2C, 1-Wire, or other peripherals
+  will be placed in `test/device/` or marked with `#ifdef DEVICE_BUILD` guards if in the same file.
 
 ### Test Isolation
-- [x] Tests must run sequentially — PlatformIO flashes and runs one test suite at a time on
-      the device
+- [x] **Host tests** (native): Run sequentially on the host, one suite at a time
+- [x] **Device tests** (when added): Will run sequentially on the device, one suite per flash cycle
 
 ### Environment variables for testing
 ```bash
@@ -127,9 +149,19 @@ The single home for how this project's tests run.
 ## Technology Stack
 
 ### Runtime Environment
-- **Target MCU**: ESP32-S3 (Xtensa LX7), board `esp32-s3-devkitm-1`
+- **Target MCU**: ESP32-S3 (Xtensa LX7), board **`esp32-s3-devkitc-1`** (standing in for the actual
+  hardware: Hosyond ESP32-S3-WROOM-1 N16R8 — 16 MB flash, 8 MB octal PSRAM)
+  - **Why `devkitc-1`**: PlatformIO's board database has no entry for the N16R8 variant. The
+    `devkitc-1` is the closest upstream match; `platformio.ini` overrides are used to configure
+    the actual 16 MB flash and custom partition table. (See `board_upload.flash_size=16MB` and
+    `board_build.partitions = partitions.csv` in `platformio.ini`.)
+  - **PSRAM not used**: 8 MB octal PSRAM is present but disabled in software (GPIO 33–37 avoided).
+    A 58 KB ring buffer does not need it; disabling avoids configuration faults. Deferred to v2
+    if needed for larger history or a GUI.
+- **Platform**: `espressif32@6.9.0` (ESP-IDF 5.3.1, has `i2c_master` API required by BH1750 driver)
 - **RTOS**: FreeRTOS (bundled with ESP-IDF)
-- **Bootloader / partitioning**: ESP-IDF defaults; see `sdkconfig.esp32-s3-devkitm-1`
+- **Bootloader / partitioning**: Custom partition table in `partitions.csv` (16 MB flash, no OTA)
+  configured via `board_build.partitions` override
 
 ### Languages & Frameworks
 - **C**: ESP-IDF application code (`src/main.c` — `app_main()` entrypoint)
@@ -188,6 +220,27 @@ After `/bmb:c4` runs, this section will contain pointers to the Container-level 
 
 ## Recent Technology Changes
 
+### 2026-08-19 - Phase 1: Platform pinned, board corrected, native test environment added
+- **What Changed**:
+  - `platformio.ini`: Platform pinned to `espressif32@6.9.0` (ESP-IDF 5.3.1); board retargeted to
+    `esp32-s3-devkitc-1` with `board_upload.flash_size=16MB` and custom partition table override
+  - New `[env:native]` environment for host-based logic testing (no hardware required)
+  - `test/native/esp_shim.h`: ESP-IDF type/macro shims (`esp_err_t`, `ESP_OK`, no-op `ESP_LOG*`)
+  - `partitions.csv`: 16 MB flash partition table (nvs/phy_init/factory; no OTA)
+- **Reason**:
+  - Platform pin ensures reproducible IDF version and `i2c_master` API availability for BH1750
+  - Board correction aligns configuration with actual hardware (N16R8: 16 MB flash, 8 MB PSRAM)
+  - Native environment enables unattended TDD — pure logic tests run on the host without a board
+- **Impact**:
+  - `pio run` now builds for N16R8 config (was misconfigured for 8 MB variant)
+  - `pio test -e native` runs 11 logic tests today (Phase 1's `test_reading_store` suite),
+    in CI/locally without hardware; the Test Strategy's ~31-test target is spread across all
+    six phases as later suites (`test_level_switches`, `test_sensor_hub`, `test_reading_json`)
+    are added — not all present yet
+  - `pio test -e esp32-s3-devkitm-1` still requires a board (used for device-specific features in later phases)
+- **Migration Notes**: Fresh checkouts must run `pio test -e native` to verify the host environment.
+  Flashing to hardware uses the corrected board config: `pio run --target upload`
+
 ### 2026-08-19 - Initial scaffold recorded
 - **What Changed**: Memory bank initialized against the generated PlatformIO + ESP-IDF scaffold
 - **Reason**: Baseline for all subsequent Banyan workflows
@@ -203,6 +256,6 @@ After `/bmb:c4` runs, this section will contain pointers to the Container-level 
 - Include version numbers and configuration locations for maintainability
 - Update Component Structure section when adding new modules or services
 - Update Development Commands section when commands change
-- **Pin versions**: `platformio.ini` currently pins neither the `espressif32` platform version nor
-  any library versions. Pin `platform = espressif32@<version>` before the build needs to be
-  reproducible.
+- **Pin versions**: `platformio.ini` pins `platform = espressif32@6.9.0` as of Phase 1
+  (2026-08-19). Library dependencies declared via `idf_component.yml` (Phase 2+) still need
+  their own version pins when added.
