@@ -45,18 +45,24 @@ backends:
   creative-uiux:         anthropic      # anthropic[:tier] | codex[:model]   — UI/UX design doc
   creative-algorithm:    anthropic      # anthropic[:tier] | codex[:model]   — algorithm design doc
   creative-user-journey: anthropic      # anthropic[:tier] | codex[:model]   — user-journey doc
-  creative-critique:     codex          # anthropic[:tier] | codex[:model] | off  — adversarial pass
+  creative-critique:     anthropic          # anthropic[:tier] | codex[:model] | off  — adversarial pass
   auto-final-review:     anthropic      # anthropic[:tier] | codex[:model]   — auto-build final review
   availability:          auto           # auto = silently fall back to Anthropic if Codex is down
                                          # on   = fall back the same way, but emit a visible ⚠ warning
 # tier ∈ haiku|sonnet|opus — tunes the Claude sub-agent that runs the seam.
 ```
 
-Codex was **not detected** on this machine at init, so every mandatory seam is `anthropic` and the
-optional `creative-critique` pass simply skips — behavior identical to pre-integration BMB. If the
-`codex@openai-codex` plugin is installed later, the critique pass self-enables; re-run
-`/bmb:doctor` to confirm, and flip `code-review` / `auto-final-review` to `codex` by hand if you
-want an independent reviewer.
+Codex was **not detected** on this machine at init, so every seam runs on `anthropic`.
+
+`creative-critique` was moved from `codex` to `anthropic` by hand on 2026-08-19. The default is
+`codex` because that seam's whole value is an *independent* reviewer; on `anthropic` it becomes a
+same-provider self-critique, which still catches contradictions and unstated assumptions but is
+structurally weaker than an outside opinion. The trade chosen here is a weaker critique over no
+critique at all — the alternative was the pass skipping silently, since `creative-critique` skips
+rather than falling back when its configured backend is unreachable.
+
+If the `codex@openai-codex` plugin is installed later, set this seam back to `codex` and consider
+flipping `code-review` / `auto-final-review` too; re-run `/bmb:doctor` to confirm detection.
 
 ## Team
 
