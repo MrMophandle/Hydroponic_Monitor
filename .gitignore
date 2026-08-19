@@ -3,3 +3,12 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+
+# Banyan Memory Bank — advisory cache (never sync between machines)
+memory-bank/.local/
+
+# Session logs + telemetry (generated, may contain sensitive info)
+.agent-logs/sessions/
+.agent-logs/claude/
+.agent-logs/telemetry/
+.agent-logs/telemetry.jsonl
