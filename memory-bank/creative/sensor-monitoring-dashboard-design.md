@@ -236,6 +236,65 @@ Surfaced during design and folded into Phase 1:
 
 ---
 
+## Post-critique refinements (2026-08-19)
+
+An adversarial plan critique ran after the design was approved and found three high-severity
+defects. None overturned an approved decision — each refines *how* a decision is realized.
+Recorded here so the reasoning is not lost.
+
+### R1 — Watchdog guards the read window, not the whole loop
+
+Decision 6 said the sampler subscribes to the IDF task watchdog. That is incompatible with
+the 30-second cadence from Decision 5: ESP-IDF's TWDT requires a subscribed task to reset it
+within `CONFIG_ESP_TASK_WDT_TIMEOUT_S` (5 s by default), so a permanently-subscribed sampler
+would fire a spurious reboot on **every cycle**. Raising the timeout past 30 s would defeat
+the purpose — the watchdog exists to catch a hung ~1 s read.
+
+**Refinement**: subscribe around the sensor-read window only (`esp_task_wdt_add(NULL)` before
+the reads, `esp_task_wdt_delete(NULL)` after). The bounded read phase is guarded; the long
+sleep deliberately is not.
+
+### R2 — `reading_store` splits into a pure core and a locking wrapper
+
+Decision 4 made host-testability the point of the `lib/` boundary, and Decision 3 gave
+`reading_store` ownership of the mutex. Together those are contradictory: a
+`SemaphoreHandle_t` does not exist on the host, so the module could not compile in
+`[env:native]` — breaking the enabling premise of Phase 1.
+
+**Refinement**: `reading_store_core` holds the pure ring buffer (push, wrap, count,
+downsample) with no FreeRTOS dependency and carries all the host tests; `reading_store` is a
+thin device-only wrapper owning the mutex and delegating. This also reads better against the
+"one clear purpose" principle than the merged module did.
+
+### R3 — Snapshot under the lock, then stream
+
+Decision 5 required chunked streaming for flat peak RAM; Decision 3 required handlers to
+time-box lock acquisition at 100 ms. Those collide. Holding the store mutex while streaming
+chunks means holding it across blocking network I/O — a stalled TCP client could starve the
+sampler for seconds. Releasing it between chunks lets the ring mutate mid-response and emit
+torn, index-misaligned arrays.
+
+**Refinement**: downsample **under** the lock into a small bounded snapshot, release the
+lock, then stream from the snapshot. At the 180-point default that is ~3.6 KB; the lock is
+held for microseconds and no network I/O ever happens while it is held. `points` is capped
+at 500 (~10 KB) so the snapshot buffer can be statically sized.
+
+This makes the original "cannot serialize the history into RAM" framing more precise: it is
+true of the *full 2,880-sample ring* (~84 KB of JSON), not of a downsampled response. The
+cap is what keeps the two facts compatible.
+
+### R4 — A serial-logged IP as an mDNS fallback
+
+mDNS was chosen (Decision: discoverability) because DHCP would otherwise break the bookmark
+— the user's stated success metric. The critique noted this makes `.local` resolution a
+single point of failure for that metric, and Android browsers resolve `.local` unreliably.
+
+**Refinement**: log the assigned IP over serial on every connect and reconnect, so a working
+fallback URL always exists, and document a DHCP reservation as the durable workaround.
+Rejected as out of scope: captive-portal provisioning and static-IP configuration.
+
+---
+
 ## Open items requiring bench verification
 
 These were flagged as genuinely undetermined rather than assumed:
