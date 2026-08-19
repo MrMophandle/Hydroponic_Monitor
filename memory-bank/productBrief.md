@@ -6,9 +6,7 @@
 ## Project Foundation
 
 - **Project Name**: Hydroponic_Monitor (CMake/IDF project name: `HydroponicMonitor`)
-- **Objectives**: [To be defined — the repository is a fresh PlatformIO + ESP-IDF scaffold with no
-  implemented functionality yet. Define the monitoring objectives and success criteria before the
-  first Level 2+ feature.]
+- **Objectives**: This repository contains the firmware to operate an ESP32-S3-N16R8 development board.  This board will have several sensors attached to it.  The firmware needs to host a webpage that shows current stats.  Future capability includes the addition of a relay to control the pump of the hydroponic system itself.
 - **Scope**: [To be defined]
 - **Repository Structure**: **Poly-repo** — a single-deployable ESP-IDF firmware project.
   ```
@@ -48,9 +46,9 @@
 
 Core capabilities this product provides:
 
-- [Core capability 1 — to be defined]
-- [Core capability 2 — to be defined]
-- [Core capability 3 — to be defined]
+- Reads sensors attached to the ESP32
+- Creates and hosts (makes available on my LAN) a visually attractive webpage that displays the statistics collected from the metrics.
+- Stores data in memory (FIFO) for historical data to be presented on the webpage.
 
 ## Markets Serviced
 
@@ -72,7 +70,7 @@ Core capabilities this product provides:
 
 | Persona | Role | Goals | Pain Points | Success Metrics |
 |---------|------|-------|-------------|-----------------|
-| [Name] | [Job title/role] | [What they want to achieve] | [Current challenges] | [How they measure success] |
+| [User (me)] | [me] | [Load a webpage that shows how the hydroponic system is performing] | [Current system is a bucket with a pump in it...no data collected] | [I can bookmark a page on my browser that shows me how the hydroponic system is doing] |
 
 ### Secondary Users
 
@@ -88,7 +86,7 @@ Core capabilities this product provides:
 
 ## User Flows
 
-- **Primary Flow**: [Main happy path]
+- **Primary Flow**: [No authentication, user loads the webpage and see's the statistics]
 - **Onboarding**: [How new users get started — e.g. device provisioning / Wi-Fi setup]
 - **Key Workflows**:
   - [Critical user journey 1]
@@ -215,12 +213,18 @@ Core capabilities this product provides:
 
 - [ ] What does the monitor actually measure (pH, EC/TDS, water + air temperature, humidity, water
       level, light) and which sensor parts are used?
-- [ ] How are readings delivered — Wi-Fi + MQTT, HTTP, BLE, local display, or SD logging?
+      Answer: I have sensors available that measure bucket fullness (float sensor), light levels, and temperature.  I plan on adding a relay in a later build.
+- [ ] How are readings delivered — Wi-Fi + MQTT, HTTP, BLE, local display, or SD logging?  
+      Answer: HTTP through a locally hosted webpage.
 - [ ] Is there a companion dashboard or mobile app?
+      Answer: No
 - [ ] Does the device actuate anything (dosing pumps, water pump, lights) or is it read-only?
+      Answer: Today, no.  First iteration is strictly a monitoring platform.  V2 we will add the relay to control the pump (turn it on/off)
 - [ ] Should the generated `build/` directory be untracked? It is currently committed (415 tracked
       files, nearly all build artifacts), while `.pio/` is already ignored.
+      Answer: Open to your suggestion here.
 - [ ] Is OTA update in scope?
+      Answer: No, I will manually flash the ESP32 if/when we upgrade it.
 
 ## Document History
 
