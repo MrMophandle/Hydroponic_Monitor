@@ -634,13 +634,23 @@ Phase 1 — foundation and test harness:
       `.pio/` is already ignored, so this makes repo hygiene consistent.
 
 Phase 2 — sensor drivers:
-- [ ] `src/idf_component.yml` — declares `espressif/onewire_bus`, `espressif/ds18b20`
-- [ ] `lib/bh1750/include/bh1750.h`, `lib/bh1750/src/bh1750.c` — I2C lux driver
-- [ ] `lib/ds18b20_probe/include/ds18b20_probe.h`, `lib/ds18b20_probe/src/ds18b20_probe.c`
-- [ ] `lib/level_switches/include/level_switches.h`, `lib/level_switches/src/level_switches.c`
-- [ ] `lib/device_status/include/device_status.h`, `lib/device_status/src/device_status.c`
+- [x] `src/idf_component.yml` — declares `espressif/onewire_bus ^1.0.0`, `espressif/ds18b20
+      ^0.3.1` (pinned below the newer 0.4.0 — its manifest's `$CONFIG{...}` conditional
+      dependency clause fails to parse under this project's idf-component-manager/IDF 5.3.1
+      toolchain; documented inline in the file)
+- [x] `lib/bh1750/include/bh1750.h`, `lib/bh1750/src/bh1750.c` — I2C lux driver (device-only,
+      `i2c_master` API)
+- [x] `lib/ds18b20_probe/include/ds18b20_probe.h`, `lib/ds18b20_probe/src/ds18b20_probe.c`
+      (device-only, managed `onewire_bus`/`ds18b20` components)
+- [x] `lib/level_switches/include/level_switches.h`, `lib/level_switches/src/level_switches.c`
+      — pure debounced 3-band + `FAULT` state machine (N=3 consecutive-sample debounce,
+      configurable switch polarity), zero FreeRTOS/ESP-IDF-hardware dependency,
+      host-testable under `[env:native]`
+- [x] `lib/device_status/include/device_status.h`, `lib/device_status/src/device_status.c`
       — `status_set()` seam; log-only in v1, LED consumer deferred
-- [ ] `test/test_level_switches/test_level_switches.c`
+- [x] `test/test_level_switches/test_level_switches.c` — 10 tests (4 truth-table
+      combinations, debounce rejection, flapping-never-commits, sustained-commits,
+      FAULT-never-resolved-to-neighbor, polarity inversion)
 
 Phase 3 — sampler and store integration:
 - [ ] `lib/sensor_hub/include/sensor_hub.h`, `lib/sensor_hub/src/sensor_hub.c`
@@ -666,8 +676,11 @@ Phase 6 — web UI:
 ### Phases
 - [x] Phase 1: Foundation & test harness — board config corrected, `[env:native]` running,
       ring buffer TDD'd, secrets file gitignored
-- [ ] Phase 2: Sensor drivers — all three sensors read on hardware via a **one-shot** read at
-      boot, printed over serial (periodic sampling arrives with the task in Phase 3)
+- [x] Phase 2: Sensor drivers — `bh1750`, `ds18b20_probe`, `level_switches`, `device_status`
+      built; `level_switches` state machine host-tested (10 tests, 21/21 total on
+      `[env:native]`); device build clean. **The one-shot boot-time serial read is deferred**
+      — see Execution State note below: the roadmap's own New Source Files list assigns
+      `src/main.c` wiring to Phase 6 only, so no call site exists yet to perform it
 - [ ] Phase 3: Sampler & store — 30-second sampling into the ring, failure escalation,
       watchdog subscription **scoped to the read window only**
 - [ ] Phase 4: Connectivity — Wi-Fi station with backoff reconnect, mDNS hostname, and the
@@ -685,17 +698,36 @@ Phase 6 — web UI:
 ## Execution State
 
 **Build Status**: IDLE
-**Current Phase**: BUILD (Phase 2 next)
-**Last Completed**: Phase 1 (foundation & test harness) — committed to feature/sensor-monitoring-dashboard
-**Can Resume**: NO — Phase 1 fully committed; next /bmb:build starts Phase 2 fresh
+**Current Phase**: BUILD (Phase 3 next)
+**Last Completed**: Phase 2 (sensor drivers) — committed to feature/sensor-monitoring-dashboard
+**Can Resume**: NO — Phase 2 fully committed; next /bmb:build starts Phase 3 fresh
 
-**Outstanding manual hardware-verification items from Phase 1** (not blocking the commit —
-this environment has no board attached — but must be done before Phase 1 is considered
-fully closed per the Test Strategy):
+**Outstanding manual hardware-verification items from Phase 1** (carried forward, unchanged —
+this environment still has no board attached):
 - AC-ERROR-6 build-failure check (rename `include/wifi_secrets.h` away, confirm `pio run`
   fails naming both it and the `.example`, restore)
 - DRAM free-heap baseline log at boot (`esp_get_free_heap_size()`), for the Phase 5 re-check
 - Both device environments boot and print over serial on real hardware
+
+**Outstanding manual hardware-verification items from Phase 2** (not blocking the commit —
+no board attached — but must be done before Phase 2 is considered fully closed per the Test
+Strategy):
+- One-shot read of all three sensors at boot, printed over serial, confirming plausible lux/
+  °C/level values. **This cannot be performed yet even on hardware**: the Implementation
+  Roadmap's New Source Files list assigns `src/main.c` `app_main()` wiring for all subsystems
+  to **Phase 6 only** — Phase 2 deliberately does not touch `src/main.c` (drivers are built and
+  compile-verified in isolation, with no call site). This is a real gap between the Phases
+  summary line (which describes a one-shot boot read as Phase 2's hardware exit criterion) and
+  the New Source Files roadmap (which defers all `main.c` wiring to Phase 6). Flagging rather
+  than silently resolving it: the TDD build for this phase followed the New Source Files list
+  (the more specific, file-level source of truth) and left `src/main.c` untouched. If a
+  one-shot boot read is genuinely wanted before Phase 6, a human should decide whether to pull
+  a minimal temporary wiring stub into Phase 3 or accept combined verification at Phase 6.
+- Float-switch polarity confirmed by physically raising/lowering each float (sets the real
+  `invert_high`/`invert_low` values at the Phase 3+ call site — `level_switches`' own tests
+  already cover both polarities in the abstract).
+- Confirm whether the DROK DS18B20 adapter board already populates the 4.7 kΩ pull-up before
+  adding the loose resistor.
 
 **BRAINSTORM CRITIQUE**: anthropic — configured:anthropic (verdict REVISE; 3 high, 4 medium,
 3 low — all applied)
@@ -749,6 +781,62 @@ populated.
 - `systemPatterns.md`: module-split pattern recorded, testing emphasis updated, greenfield banner removed
 - `techContext.md`: platform version and board config recorded, test execution strategy updated with `[env:native]`, development commands added
 - Execution State section updated (this pass)
+
+---
+
+### Phase 2 — Sensor Drivers (2026-08-19)
+
+**Step 3 — TDD Implementation**
+- Built `level_switches` (pure debounced 3-band + FAULT state machine, N=3 debounce,
+  configurable polarity) with 10 new host tests; `bh1750` (I2C lux driver, `i2c_master` API);
+  `ds18b20_probe` (1-Wire temp driver via managed `onewire_bus`/`ds18b20` components);
+  `device_status` (log-only `status_set()` seam)
+- `src/idf_component.yml` added declaring `espressif/onewire_bus ^1.0.0`,
+  `espressif/ds18b20 ^0.3.1` (pinned below 0.4.0 — version-solver incompatibility with this
+  toolchain's idf-component-manager, documented inline)
+- `platformio.ini`: `[env:native]` test_filter extended to include `test_level_switches`;
+  `[env:esp32-s3-devkitm-1]` gained `lib_deps` for the three device-only libraries so they
+  compile even with no call site yet
+- RED CONFIRMED (10 failing) → GREEN (10/10, 21/21 full native suite)
+
+**Step 6 — Batch Testing**
+- `pio test -e native`: 21/21 PASS (11 pre-existing `test_reading_store` + 10 new
+  `test_level_switches`, unmodified)
+- `pio run -e esp32-s3-devkitm-1`: builds clean (4.0% RAM, 6.6% flash)
+- `pio check -e esp32-s3-devkitm-1`: cppcheck clean (pre-existing unrelated `app_main` note only)
+
+**Step 7 — Integration Verification**
+- All three gates (native tests, device build, static analysis) PASS — verdict PASS, no
+  phase-relevant failures
+
+**Step 8 — Code Review**
+- Initial verdict: CHANGES REQUESTED — one blocking issue: `ds18b20_config_t ds_config`
+  declared uninitialized before being passed to the managed component API
+  (`lib/ds18b20_probe/src/ds18b20_probe.c`)
+- Fix applied directly (orchestrator): zero-initialize via `memset(&ds_config, 0,
+  sizeof(ds_config))` rather than `= {0}`, because the component's `ds18b20_config_t` is
+  currently an empty/reserved struct in v0.3.1 and `= {0}` produces an "excess elements in
+  struct initializer" warning; `memset` stays correct and warning-free even if a future
+  component bump adds fields
+- Re-verified after fix: device build clean with zero warnings, native suite still 21/21,
+  cppcheck still clean
+- Non-blocking notes: BH1750 timing constants hardcoded (justified — datasheet-fixed, not
+  environment config); `ds18b20` 0.3.1 pin tracked as a DEDICATED-TASK to revisit on next
+  toolchain bump (LOW priority, non-security); `device_status` appropriately minimal for v1
+- Security review: PASS — no injection/secrets/buffer-overflow risk; dependency audit clean
+  (`espressif/onewire_bus`, `espressif/ds18b20` — official Espressif components, no known CVEs)
+- Final verdict: APPROVED
+
+**Step 9 — Documentation**
+- Inline comments reviewed across all four new driver modules — found already sufficiently
+  documented (debounce logic, I2C timing, 1-Wire binding rationale, memset rationale); no
+  additions needed
+- `systemPatterns.md`: Status banner and architecture diagram updated — `bh1750`,
+  `ds18b20_probe`, `level_switches`, `device_status` now marked BUILT (Phase 2); Phase 2
+  entry added to Recent Architecture Changes
+- `techContext.md`: new "Managed IDF Components (Phase 2+)" section documenting
+  `espressif/onewire_bus`/`espressif/ds18b20` and the version pin rationale; Phase 2 entry
+  added to Recent Technology Changes; Status banner updated with build metrics and test count
 
 ---
 

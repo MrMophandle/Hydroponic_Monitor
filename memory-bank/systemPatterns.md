@@ -2,13 +2,11 @@
 
 This file documents the architectural patterns, design patterns, and system structure used in this project. It helps developers understand the system's organization and maintain consistency when extending functionality.
 
-> **Status (2026-08-19)**: Phase 1 of sensor-monitoring-dashboard landed. Only
-> `lib/reading_store_core/` (the pure ring buffer) exists in code today. The split-module
-> pattern below — isolating pure logic from a device-only FreeRTOS wrapper — is the
-> **convention Phase 1 establishes**; the `reading_store` locking wrapper itself, and every
-> other component in the architecture diagram below besides `reading_store_core`, is **planned,
-> not yet built** (deferred to Phase 3+, once a concurrent writer exists). Do not treat this
-> file as evidence those files exist — check `lib/`/`src/` directly.
+> **Status (2026-08-19)**: Phase 2 of sensor-monitoring-dashboard landed. `lib/reading_store_core/`
+> (the pure ring buffer), four sensor drivers (`bh1750`, `ds18b20_probe`, `level_switches`),
+> and the `device_status` log-only seam are now **built and tested**. The `reading_store`
+> locking wrapper and `sensor_hub` (Phase 3+) remain **planned, not yet built**. Do not treat
+> this file as evidence those remaining files exist — check `lib/`/`src/` directly.
 
 ## Guiding Principles
 
@@ -32,8 +30,9 @@ This file documents the architectural patterns, design patterns, and system stru
 
 ### High-Level Architecture
 ```
-Target shape (Sensor Monitoring, Hydroponic Reservoir) — ONLY reading_store_core exists
-today (Phase 1). Everything else below is the planned Phase 2-6 shape, not yet built:
+Target shape (Sensor Monitoring, Hydroponic Reservoir) — Phase 1 + Phase 2 components
+are BUILT. Phase 3+ components (reading_store wrapper, sensor_hub, app/wifi/http layers)
+are planned but not yet built:
 
 ┌──────────────────────────────────────────────────────────────┐
 │ Application Layer (src/)                                      │
@@ -42,6 +41,7 @@ today (Phase 1). Everything else below is the planned Phase 2-6 shape, not yet b
 │  │ sampler.c   ← periodic reading & TWDT subscription      │ │
 │  │ wifi_conn.c ← station mode, reconnect, mDNS (Phase 4)  │ │
 │  │ http_api.c  ← /api/now, /api/history (Phase 5)         │ │
+│  │  NOT BUILT (planned)                                     │ │
 │  └─────────────────────────────────────────────────────────┘ │
 └──────────────────────────────────────────────────────────────┘
          │
@@ -53,15 +53,15 @@ today (Phase 1). Everything else below is the planned Phase 2-6 shape, not yet b
         │ (device-only)  │  │  failure     │  │ bh1750 (I2C)    │
         │  NOT BUILT     │  │  handling)   │  │ ds18b20 (1-Wire)│
         │  (planned)     │  │  NOT BUILT   │  │ level_switches  │
-        └────────┬────────┘  │  (planned)   │  │ (GPIO)          │
-                 │           └──────────────┘  │ NOT BUILT       │
-                 │                              │ (planned)       │
+        └────────┬────────┘  │  (planned)   │  │ device_status   │
+                 │           └──────────────┘  │ ◄─ BUILT        │
+                 │                              │    (Phase 2)    │
                  │                              └─────────────────┘
         ┌────────▼─────────────┐
-        │ reading_store_core   │  ◄─── BUILT (Phase 1), the only real component today
+        │ reading_store_core   │  ◄─── BUILT (Phase 1)
         │ (pure ring buffer,   │
-        │  downsample logic;   │
-        │  NO FreeRTOS)        │ ◄─── Host-testable: [env:native]
+        │  downsample logic;   │ ◄─── Host-testable: [env:native]
+        │  NO FreeRTOS)        │
         │                      │
         │ • 2,880-entry ring   │
         │ • push/count/is_full │
@@ -236,6 +236,26 @@ To populate this section, run `/bmb:c4`. The command builds a complete bottom-up
 <!-- AUTO-MANAGED: c4-architecture-end -->
 
 ## Recent Architecture Changes
+
+### 2026-08-19 - Phase 2: Sensor Drivers Added (bh1750, ds18b20_probe, level_switches, device_status)
+- **What Changed**: Four device-driver modules now implemented and tested:
+  - `lib/bh1750/` — I2C ambient-light sensor driver (0x23 address), using ESP-IDF's `i2c_master` API
+  - `lib/ds18b20_probe/` — 1-Wire water-temperature probe driver, wrapping managed components
+    `espressif/onewire_bus` (1.0.0) and `espressif/ds18b20` (0.3.1)
+  - `lib/level_switches/` — debounced 3-band water-level state machine (FULL/MID/LOW + FAULT),
+    pure-logic half of the split pattern with host test suite (`test_level_switches`)
+  - `lib/device_status/` — status log-only seam (OK/SENSOR_FAULT/LEVEL_FAULT/WIFI_DOWN)
+- **Reason**: These drivers enable Phase 3+ to wire sensor reads into the sampler task. The
+  pure-logic `level_switches` core is verified on the host via `[env:native]`; the I2C and 1-Wire
+  drivers are device-only (physical buses cannot be emulated) and verified by compile-success and
+  hardware bench testing.
+- **Trade-offs**: Drivers are compiled into the build and verified at image link time, but the
+  application layer (`src/`) has no call sites yet — that lands in Phase 6. The device builds
+  prove the drivers compile cleanly; functional integration testing is deferred to Phase 3 when
+  the sampler task calls them.
+- **Affected Components**: `lib/bh1750/`, `lib/ds18b20_probe/`, `lib/level_switches/`,
+  `lib/device_status/`, `test/test_level_switches/` (new). The `reading_store_core` and
+  `reading_store` (wrapper) are unaffected. New dependencies declared in `src/idf_component.yml`.
 
 ### 2026-08-19 - Phase 1: Pure-Logic / Device-Only Split Pattern Introduced
 - **What Changed**: `lib/reading_store_core/` (pure ring buffer + downsample, no FreeRTOS) is

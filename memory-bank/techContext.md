@@ -2,13 +2,14 @@
 
 This file documents the technology stack, infrastructure, and tooling used in this project. It serves as a reference for understanding technical decisions and helps maintain consistency across development phases.
 
-> **Status (2026-08-19)**: Phase 1 complete. Board configuration corrected to actual hardware
-> (N16R8: 16 MB flash, 8 MB PSRAM), platform pinned to `espressif32@6.9.0` (ESP-IDF 5.3.1),
-> and `[env:native]` host environment added for pure-logic testing. `reading_store_core` (the
-> pure ring-buffer half only — the locking wrapper is deferred) implemented with 11 passing
-> host tests (`pio test -e native`); the device build (`pio run -e esp32-s3-devkitm-1`) compiles
-> clean but nothing in `src/` calls the new module yet, so "verified on device" means the build
-> succeeds, not that the module has been exercised on hardware.
+> **Status (2026-08-19)**: Phase 2 complete. Sensor drivers (`bh1750`, `ds18b20_probe`,
+> `level_switches`, `device_status`) implemented and tested. Managed IDF components
+> (`espressif/onewire_bus`, `espressif/ds18b20`) declared in `src/idf_component.yml`.
+> Host-testable logic tests expanded to 21 passing (`pio test -e native` covers
+> `test_reading_store` + `test_level_switches`). Device build (`pio run -e esp32-s3-devkitm-1`)
+> compiles clean at 4.0% RAM, 6.6% flash. Drivers are **not yet called from `src/`** — that
+> lands in Phase 6; Phase 2 proves they compile and link correctly against ESP-IDF/FreeRTOS
+> headers.
 
 ## Component Structure
 
@@ -191,6 +192,14 @@ The single home for how this project's tests run.
 - **Static analysis**: `pio check` (cppcheck)
 - **Test framework**: Unity, via PlatformIO Test Runner
 
+### Managed IDF Components (Phase 2+)
+- **espressif/onewire_bus** (^1.0.0) — Generic 1-Wire bus driver using RMT hardware backend.
+  Required by `lib/ds18b20_probe/`. Declared in `src/idf_component.yml`.
+- **espressif/ds18b20** (^0.3.1) — DS18B20 temperature probe driver. Required by
+  `lib/ds18b20_probe/`. Pinned to 0.3.x (not 0.4.0) due to a version-solver incompatibility
+  with the bundled `idf-component-manager` 1.x in `espidf@6.9.0` (0.4.0's manifest uses a
+  `$CONFIG{...}` conditional that 1.x cannot parse). See inline comment in `src/idf_component.yml`.
+
 ### External Services
 - [None yet]
 
@@ -219,6 +228,34 @@ After `/bmb:c4` runs, this section will contain pointers to the Container-level 
 <!-- AUTO-MANAGED: c4-references-end -->
 
 ## Recent Technology Changes
+
+### 2026-08-19 - Phase 2: Managed IDF components and device-driver libraries added
+- **What Changed**:
+  - New `src/idf_component.yml` declares managed ESP-IDF components: `espressif/onewire_bus`
+    (^1.0.0) and `espressif/ds18b20` (^0.3.1). The `idf-component-manager` now resolves and
+    locks these into `dependencies.lock`.
+  - New `platformio.ini` `[env:esp32-s3-devkitm-1]` section: `lib_deps = bh1750,
+    ds18b20_probe, device_status` forces compilation of driver libraries even though no
+    call sites exist yet (Phase 6 integration). This proves drivers compile cleanly before
+    their first use in application code.
+  - New `[env:native]` section: `test_filter = test_reading_store, test_level_switches`
+    expands host test coverage to include the level-switches debounce state machine.
+- **Reason**:
+  - Phase 2 implements four device drivers; two of them (`bh1750` I2C, `ds18b20` 1-Wire) rely
+    on managed ESP-IDF components for the underlying bus abstractions.
+  - Forcing compilation now (via `lib_deps`) uncovers build issues early, rather than
+    discovering them later when the drivers are first called in Phase 6.
+  - Adding `test_level_switches` to the host test suite extends unattended CI coverage;
+    `pio test -e native` now runs 21 tests (11 from Phase 1 + 10 new).
+- **Impact**:
+  - `pio run -e esp32-s3-devkitm-1` now includes driver code in the image (flash/RAM impact:
+    4.0% RAM, 6.6% flash as of phase-end verification).
+  - `pio test -e native` gains 10 new tests; all 21 pass on the host without hardware.
+  - `dependencies.lock` is now a tracked file (records resolved managed-component versions
+    for reproducible builds).
+- **Migration Notes**: Fresh checkouts must run `pio run -e esp32-s3-devkitm-1` to fetch
+  and lock managed components. `dependencies.lock` should be committed to git. A `.gitignore`
+  update adds `managed_components/` (build artifact).
 
 ### 2026-08-19 - Phase 1: Platform pinned, board corrected, native test environment added
 - **What Changed**:

@@ -1,0 +1,20 @@
+# Managed IDF components required by the Phase 2 sensor drivers.
+#
+# - espressif/onewire_bus: generic 1-Wire bus driver (RMT-backed) that
+#   espressif/ds18b20 is built on top of. Needed by lib/ds18b20_probe.
+# - espressif/ds18b20: DS18B20 temperature-probe driver over the onewire_bus
+#   abstraction. Needed by lib/ds18b20_probe. Pinned to 0.3.x rather than the
+#   latest 0.4.0: 0.4.0's manifest declares an optional dependency on
+#   espressif/sensor_hub using a `$CONFIG{...}` conditional `if` clause that
+#   the idf-component-manager version bundled with espidf@6.9.0's toolchain
+#   (1.x, vendored inside framework-espidf) cannot parse
+#   (`pyparsing.exceptions.ParseException: Expected '||' operations, found
+#   '$'`) — a version-solver failure, not anything wrong with our manifest.
+#   0.3.1 has no such clause and resolves cleanly.
+#
+# The BH1750 I2C driver (lib/bh1750) needs no managed component — it is
+# written directly against the in-tree i2c_master API (ESP-IDF 5.2+, provided
+# by the espidf@6.9.0 platform pin from Phase 1).
+dependencies:
+  espressif/onewire_bus: "^1.0.0"
+  espressif/ds18b20: "^0.3.1"
