@@ -2,12 +2,11 @@
 
 This file documents the architectural patterns, design patterns, and system structure used in this project. It helps developers understand the system's organization and maintain consistency when extending functionality.
 
-> **Status (2026-08-20)**: Phase 4 of sensor-monitoring-dashboard landed. `lib/wifi_backoff/`
-> (pure exponential backoff delay calculation) and `src/wifi_conn.c` (Wi-Fi station mode, mDNS
-> registration, serial-logged IP fallback) are now **built and tested**. Phases 1–4 complete
-> (31/31 native tests, 29.1% RAM, 27.6% flash). Phases 5–6 (`http_api`, web UI) remain
-> **planned, not yet built**. Do not treat this file as evidence those remaining files exist —
-> check `lib/`/`src/` directly.
+> **Status (2026-08-20)**: Phase 5 of sensor-monitoring-dashboard landed. `lib/reading_json/`
+> (pure JSON serializer), `src/http_api.c` (`esp_http_server` wrapper), and `src/time_sync.c`
+> (SNTP client + local TZ setup) are now **built and tested**. Phases 1–5 complete (39/39 native
+> tests, 32.6% RAM, 29.9% flash). Phase 6 (`web UI`) remains **planned, not yet built**. Do not
+> treat this file as evidence Phase 6 files exist — check `lib/`/`src/` directly.
 >
 > Also landed 2026-08-20: an audit of this file against ESP-IDF v5.3.1 best practices, and fixes
 > for deviations **D1–D4** it found (peripheral double-acquisition, `vTaskDelay` pacing, unchecked
@@ -37,44 +36,46 @@ This file documents the architectural patterns, design patterns, and system stru
 
 ### High-Level Architecture
 ```
-Target shape (Sensor Monitoring, Hydroponic Reservoir) — Phase 1–4 components
-are BUILT. Phase 5–6 components (http layer / web UI) are planned but not yet built:
+Target shape (Sensor Monitoring, Hydroponic Reservoir) — Phase 1–5 components
+are BUILT. Phase 6 (web UI) is planned but not yet built:
 
 ┌──────────────────────────────────────────────────────────────┐
 │ Application Layer (src/)                                      │
 │  ┌─────────────────────────────────────────────────────────┐ │
-│  │ app_main()  ← wiring; returns after task launch         │ │
-│  │ sampler.c   ← periodic reading & TWDT subscription      │ │
-│  │ wifi_conn.c ← station mode, reconnect, mDNS (Phase 4)  │ │
-│  │             ◄─ BUILT (Phase 4)                          │ │
-│  │ http_api.c  ← /api/now, /api/history (Phase 5)         │ │
-│  │  NOT BUILT (planned)                                     │ │
+│  │ app_main()   ← wiring; returns after task launch        │ │
+│  │ sampler.c    ← periodic reading & TWDT subscription     │ │
+│  │ wifi_conn.c  ← station mode, reconnect, mDNS (Phase 4)  │ │
+│  │              ◄─ BUILT (Phase 4)                         │ │
+│  │ time_sync.c  ← SNTP client + local TZ (Phase 5)         │ │
+│  │              ◄─ BUILT (Phase 5)                         │ │
+│  │ http_api.c   ← /api/now, /api/history (Phase 5)         │ │
+│  │              ◄─ BUILT (Phase 5)                         │ │
 │  └─────────────────────────────────────────────────────────┘ │
 └──────────────────────────────────────────────────────────────┘
          │
-         └─────────────┬────────────────┬────────────────┐
-                       │                │                │
-        ┌──────────────▼─┐  ┌───────────▼──┐  ┌────────▼────────┐
-        │ reading_store  │  │ sensor_hub   │  │ Drivers         │
-        │ (mutex wrapper)│──│ (sampler     │──│ (lib/)          │
-        │ (device-only)  │  │  failure     │  │ bh1750 (I2C)    │
-        │ ◄─ BUILT       │  │  handling)   │  │ ds18b20 (1-Wire)│
-        │    (Phase 3)   │  │ ◄─ BUILT     │  │ level_switches  │
-        └────────┬────────┘  │    (Phase 3) │  │ device_status   │
-                 │           └──────────────┘  │ ◄─ BUILT        │
-                 │                              │    (Phase 2)    │
-                 │                              └─────────────────┘
-        ┌────────▼─────────────┐
-        │ reading_store_core   │  ◄─── BUILT (Phase 1)
-        │ (pure ring buffer,   │
-        │  downsample logic;   │ ◄─── Host-testable: [env:native]
-        │  NO FreeRTOS)        │
-        │                      │
-        │ • 2,880-entry ring   │
-        │ • push/count/is_full │
-        │ • downsample to      │
-        │   caller buffer      │
-        └──────────────────────┘
+         ├─────────────┬────────────────┬────────────────┐
+         │             │                │                │
+    ┌────▼──┐  ┌──────▼─┐  ┌───────────▼──┐  ┌────────▼────────┐
+    │reading│  │reading │  │ sensor_hub   │  │ Drivers         │
+    │ _json │  │_store  │  │ (sampler     │  │ (lib/)          │
+    │(pure) │  │(mutex) │──│  failure     │──│ bh1750 (I2C)    │
+    │◄─BUILT│  │◄─BUILT │  │  handling)   │  │ ds18b20 (1-Wire)│
+    │(Phase │  │(Phase  │  │ ◄─ BUILT     │  │ level_switches  │
+    │  5)   │  │  3)    │  │    (Phase 3) │  │ device_status   │
+    └───────┘  └───┬────┘  └──────────────┘  │ ◄─ BUILT        │
+                   │                          │    (Phase 2)    │
+                   │                          └─────────────────┘
+            ┌──────▼─────────────┐
+            │ reading_store_core │  ◄─── BUILT (Phase 1)
+            │ (pure ring buffer, │
+            │  downsample logic; │ ◄─── Host-testable: [env:native]
+            │  NO FreeRTOS)      │
+            │                    │
+            │ • 2,880-entry ring │
+            │ • push/count/is    │
+            │ • downsample to    │
+            │   caller buffer    │
+            └────────────────────┘
 ```
 
 ### Component Responsibilities
@@ -112,7 +113,11 @@ pure half. The pure half lives in `lib/<name>_core/` and is host-compilable; the
 - `lib/reading_store/` (`reading_store.h/c`) — **BUILT, Phase 3**: a thin device-only wrapper
   owning a `SemaphoreHandle_t`, delegating every operation to `reading_store_core` with zero
   arithmetic of its own. The writer is the sampler task (Phase 3); the reader API supports a
-  100ms timeout (reader not yet implemented — lands in Phase 5).
+  100ms timeout (exercised in Phase 5 by http_api.c).
+- `lib/reading_json/` (`reading_json.h/c`) — **BUILT, Phase 5**: pure JSON serializer with zero
+  FreeRTOS/httpd dependency, taking readings from the caller and emitting JSON via a
+  caller-supplied write callback. Enables streaming into `httpd_resp_send_chunk()` without
+  intermediate buffering (see Phase 5 entry below). Host-tested in `test/test_reading_json/`.
 - `test/test_reading_store/test_reading_store.c` — **BUILT, Phase 1**: exercises
   `reading_store_core` on the host; uses `[env:native]` which links `esp_shim.h` instead of
   FreeRTOS.
@@ -218,15 +223,20 @@ the `range`, or validate with `GPIO_IS_VALID_GPIO()` at init and fail loudly.
 
 ### Time & Credentials
 
-- **`esp_timer_get_time()` is uptime, not a timestamp.** It resets to zero on every reboot, so
-  stored history is unanchored and non-monotonic across restarts. SNTP + `time()` is the
-  documented answer. Decide this before the Phase 5 JSON contract freezes the field.
+- **SNTP + local TZ now implemented (Phase 5).** `src/time_sync.c` is the SNTP client (using
+  `esp_netif_sntp` API against `CONFIG_HYDRO_SNTP_SERVER`, defaulting to `pool.ntp.org`) with
+  `setenv("TZ", CONFIG_HYDRO_SNTP_TZ)` + `tzset()` for local-time conversion. The sampler
+  (`src/sampler.c`) stamps `time(NULL)` + `READING_VALID_TIME_BIT` into each reading, so
+  `sensor_reading_t.epoch_sec` (renamed from `uptime_sec` Phase 1–4) is now wall-clock time
+  anchored across restarts, not device uptime. `time_sync_is_valid()` allows callers (and
+  reading_json) to distinguish "no SNTP sync yet" from "post-sync valid epoch." ✓ Decided and
+  implemented.
 - **Wi-Fi credentials belong in NVS, not the image.** Espressif's guidance for anything past a
   bench demo is NVS (which `esp_wifi` reads by default) or `wifi_prov_mgr`. The current
   compile-time `include/wifi_secrets.h` is correctly gitignored and guarded by `__has_include`
   (`src/wifi_conn.c:52-55`), but it bakes the credentials into the binary and satisfies neither
   branch of the "Kconfig or NVS" principle above. Note `nvs_flash_init()` is already called
-  (`src/wifi_conn.c:169`), so NVS is available today.
+  (`src/wifi_conn.c:169`), so NVS is available today. Still open — deferred to a future task.
 
 ## Known Deviations From These Patterns
 
@@ -366,6 +376,58 @@ To populate this section, run `/bmb:c4`. The command builds a complete bottom-up
 <!-- AUTO-MANAGED: c4-architecture-end -->
 
 ## Recent Architecture Changes
+
+### 2026-08-20 - Phase 5: HTTP API + Time Sync + JSON Serialization
+- **What Changed**:
+  - **HTTP API snapshot-then-stream pattern (AC-HAPPY-3 / AC-ERROR-5)**: `src/http_api.c` owns
+    no sensor peripheral. Every reading served comes from `reading_store_downsample()` (Phase 3's
+    locking wrapper), which already acquires the store mutex with a 100ms timeout, downsamples
+    into a static ≤500-entry snapshot, and releases the lock before returning. No handler ever
+    performs network I/O while holding the store lock. A lock-acquire timeout (`ESP_ERR_TIMEOUT`)
+    maps to HTTP 503 (Service Unavailable). Handlers serve `/` (placeholder page), `/api/now`
+    (single reading), and `/api/history?points=` (parallel arrays, clamped 1–500, default 180).
+  - **Pure-Logic/Device-Only Split extended (reading_json)**: `lib/reading_json/` is the pure
+    JSON serializer — zero FreeRTOS, zero httpd headers, zero dynamic allocation. Takes readings
+    and emits JSON through a caller-supplied write callback, enabling `src/http_api.c` (the
+    device-only caller) to stream each fragment straight into `httpd_resp_send_chunk()` without
+    intermediate buffering. Host-tested in `[env:native]`. This is the second concrete instance
+    of the Pure-Logic/Device-Only Split pattern applied (first was reading_store_core in Phase 1).
+  - **SNTP + local time (src/time_sync.c)**: SNTP client using `esp_netif_sntp` (modern API,
+    pinned IDF 5.3.1) against configurable server (Kconfig `CONFIG_HYDRO_SNTP_SERVER`, default
+    `pool.ntp.org`). Local-time conversion via `setenv("TZ", CONFIG_HYDRO_SNTP_TZ)` +
+    `tzset()` for day/night/DST calculations. `time_sync_is_valid()` reports whether an SNTP
+    sync has completed (device has no battery-backed RTC; 1970-anchored epoch means "never synced").
+  - **epoch_sec struct field rename + READING_VALID_TIME_BIT**: `sensor_reading_t.uptime_sec`
+    (Phases 1–4: device uptime via `esp_timer_get_time()`) renamed to `epoch_sec` (Phase 5+:
+    wall-clock Unix time from `time(NULL)`). Zero RAM/capacity impact (same uint32_t width).
+    New validity bit `READING_VALID_TIME_BIT` (bit 3) set by sampler on `time_sync_is_valid()`;
+    cleared otherwise. reading_json respect this bit: if clear, `"time_valid": false` and
+    consumers know epoch_sec is untrustworthy.
+  - New Kconfig "SNTP / Time" submenu: `CONFIG_HYDRO_SNTP_SERVER` (string), `CONFIG_HYDRO_SNTP_TZ`
+    (POSIX TZ string, placeholder default with help text noting it is not the real timezone).
+  - `src/main.c` extended: `time_sync_start()` wired after `wifi_conn_start()`, then
+    `http_api_start()` wired after `time_sync_start()`. Both checked; failures escalate via
+    `device_status` seam (`http_api_start()` reuses `DEVICE_STATUS_WIFI_DOWN` as the closest
+    existing failure seam for "dashboard delivery channel down").
+  - `platformio.ini` updated: `reading_json` added to `lib_deps` and `test_filter` (host tests).
+- **Reason**: HTTP API completes the three-actor concurrent pattern (sampler task Phase 3,
+  Wi-Fi event loop Phase 4, HTTP request dispatcher Phase 5), with JSON serialization pure and
+  testable on the host, and time sync independent of Wi-Fi connectivity semantically
+  (though functionally it requires it). Snapshot-then-stream is the concrete implementation of
+  AC-HAPPY-3 and AC-ERROR-5 (store lock timeout safety).
+- **Trade-offs**: HTTP request handlers must each allocate their own 10 KB snapshot buffer (POINTS_MAX * sizeof(sensor_reading_t)) on the stack;
+  the HTTP server task's stack size must be verified to comfortably exceed this (default IDF task stack
+  multipliers must be checked against actual link, not assumed). Snapshot is re-downsampled on every
+  request rather than cached; acceptable for a human-facing dashboard where request frequency is
+  low (sub-second requests would be UI polling, not typical).
+- **Affected Components**: `lib/reading_json/` (new), `src/http_api.c` (new), `src/time_sync.c`
+  (new), `src/main.c`, `src/Kconfig.projbuild`, `lib/reading_store_core/` (doc-only for
+  epoch_sec rename), `test/test_reading_json/` (new, 6 tests). Extends
+  Pure-Logic/Device-Only Split pattern (second instance: reading_json + http_api).
+- **Verified**: 39/39 native tests pass (`pio test -e native`); `pio run -e esp32-s3-devkitm-1`
+  SUCCESS, 0 warnings, RAM 32.6% (106,692 B), flash 29.9% (941,620 B). Manual hardware
+  verification: curl to `/api/now` and `/api/history` endpoints, time_valid bit behavior across
+  SNTP sync boundary (documented in tasks/sensor-monitoring-dashboard.md § Per-Phase Test Guidance).
 
 ### 2026-08-20 - Espressif Best-Practice Fixes D1–D4 Applied (peripheral ownership, task pacing, error checking)
 - **What Changed**:

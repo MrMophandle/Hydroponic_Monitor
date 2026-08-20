@@ -2,11 +2,12 @@
 
 This file documents the technology stack, infrastructure, and tooling used in this project. It serves as a reference for understanding technical decisions and helps maintain consistency across development phases.
 
-> **Status (2026-08-20)**: Phase 4 complete. Wi-Fi connectivity layer (`lib/wifi_backoff/`,
-> `src/wifi_conn.c`) implemented and tested. 31/31 native tests passing (`pio test -e native`):
-> 11 reading_store + 10 level_switches + 6 sensor_hub + 4 wifi_backoff. Device build
-> (`pio run -e esp32-s3-devkitm-1`): SUCCESS at 29.1% RAM (95,236 B), 27.5% flash (866,484 B);
-> 0 warnings. Code review APPROVED, 0 blocking issues. Security review PASS.
+> **Status (2026-08-20)**: Phase 5 complete. HTTP API layer (`src/http_api.c`), JSON serializer
+> (`lib/reading_json/`), and time sync (`src/time_sync.c`) implemented and tested. 39/39 native
+> tests passing (`pio test -e native`): 11 reading_store + 10 level_switches + 6 sensor_hub +
+> 4 wifi_backoff + 6 reading_json + 2 reading_store (time_valid tests). Device build
+> (`pio run -e esp32-s3-devkitm-1`): SUCCESS at 32.6% RAM (106,692 B), 29.9% flash (941,620 B);
+> 0 warnings. Code review APPROVED, 0 blocking issues.
 
 ## Component Structure
 
@@ -182,9 +183,11 @@ The single home for how this project's tests run.
 - **SPIFFS / FATFS**: available in the IDF component set [not yet used]
 
 ### API & Communication
-- [To be determined] — the IDF component set available in `sdkconfig` includes `esp_wifi`,
-  `mqtt`, `esp_http_client`, `esp_http_server`, and `esp-tls`, so Wi-Fi + MQTT/HTTP are
-  all buildable without adding dependencies.
+- **HTTP Server** (`esp_http_server`, Phase 5) — `src/http_api.c` serves three endpoints:
+  - **GET `/`** — Placeholder HTML page (Phase 6 owns the real dashboard)
+  - **GET `/api/now`** — Single most-recent reading in JSON format (`{"t":<epoch>,"time_valid":<bool>,"lux":<float|null>,"temp_c":<float|null>,"level":"<FULL|MID|LOW|FAULT|UNKNOWN>","valid":{...}}`)
+  - **GET `/api/history?points=<N>`** — Parallel arrays of N readings (t, time_valid, lux, temp_c, level), clamped 1–500, default 180
+  - Implementation: snapshot-then-stream pattern with `reading_store_downsample()` acquiring the store lock once, releasing before HTTP chunked-send (no lock held during I/O)
 
 ### Infrastructure & Deployment
 - **Deployment**: physical flash over USB (`pio run -t upload`)
@@ -237,6 +240,58 @@ After `/bmb:c4` runs, this section will contain pointers to the Container-level 
 <!-- AUTO-MANAGED: c4-references-end -->
 
 ## Recent Technology Changes
+
+### 2026-08-20 - Phase 5: SNTP + HTTP Server + JSON Serialization
+- **What Changed**:
+  - New SNTP client: `src/time_sync.c` uses `esp_netif_sntp` (modern IDF 5.3.1 API) to sync
+    wall-clock time from `CONFIG_HYDRO_SNTP_SERVER` (Kconfig, default `pool.ntp.org`). Local
+    time conversion via `setenv("TZ", CONFIG_HYDRO_SNTP_TZ)` + `tzset()` for day/night/DST logic.
+  - New HTTP server endpoints via `src/http_api.c` (`esp_http_server` wrapper):
+    - GET `/` — placeholder dashboard
+    - GET `/api/now` — current reading in JSON
+    - GET `/api/history?points=<N>` — N historical readings (clamped 1–500, default 180)
+  - New JSON serializer `lib/reading_json/` (pure logic, zero FreeRTOS/httpd) emits readings
+    via caller-supplied callback (enables streaming into `httpd_resp_send_chunk()` with no
+    intermediate buffer overhead). Respects validity bits: invalid sensors serialize as `null`.
+  - New Kconfig "SNTP / Time" submenu: `CONFIG_HYDRO_SNTP_SERVER` (string, default `pool.ntp.org`),
+    `CONFIG_HYDRO_SNTP_TZ` (POSIX TZ string, placeholder default).
+  - `lib/reading_store_core.h`: named validity-bit constants added (`READING_VALID_*_BIT`),
+    replacing raw hex literals. New `READING_VALID_TIME_BIT` (bit 3) for SNTP-sync state.
+    `sensor_reading_t.epoch_sec` now holds wall-clock seconds (was `uptime_sec`), semantically
+    changed from device uptime to Unix time.
+  - `src/sampler.c`: stamps `time(NULL)` + `time_sync_is_valid()`-derived `READING_VALID_TIME_BIT`
+    instead of `esp_timer_get_time()`. Peripheral ownership and TWDT scoping unchanged.
+  - `src/main.c`: `time_sync_start()` → `http_api_start()` wired into boot sequence, after
+    `wifi_conn_start()`. Both checked; failures escalate via `device_status` seam.
+  - `platformio.ini`:
+    - `[env:esp32-s3-devkitm-1]` — `lib_deps` extended: `reading_json` added to force compile-time
+      link verification (though no application integration yet).
+    - `[env:native]` — `test_filter` extended: `test_reading_json` added (6 new host tests for
+      JSON serialization).
+  - `test/test_reading_store/test_reading_store.c`: +2 tests for `time_valid` bit set/clear,
+    mixed valid/invalid-time entries (13 tests now, was 11).
+  - No new managed IDF components this phase (SNTP is built-in to `esp_netif`, HTTP server is
+    built-in `esp_http_server`).
+- **Reason**:
+  - Wall-clock time replaces device uptime so readings persist across reboots and can be
+    correlated with external clocks. Day/night scheduling (planned pump relay feature) requires
+    local time, not UTC.
+  - HTTP API is the user-facing dashboard backend; snapshot-then-stream pattern with lock
+    timeout → HTTP 503 ensures reading-store contention never causes network hangs (AC-HAPPY-3
+    / AC-ERROR-5).
+  - Pure-logic JSON serializer is the second instance of Pure-Logic/Device-Only Split pattern,
+    enabling host tests without httpd, and callback-based streaming without intermediate buffers.
+- **Impact**:
+  - `pio test -e native` now runs 39 tests total (was 31; +6 reading_json, +2 reading_store).
+  - Device RAM/flash: 32.6% RAM (106,692 B), 29.9% flash (941,620 B); +3.5% RAM, +2.4% flash
+    vs. Phase 4 (HTTP server, JSON serializer, SNTP, time tracking).
+  - HTTP endpoints reachable once Wi-Fi AP is reachable; real time-of-day accurate once first
+    SNTP sync completes.
+- **Migration Notes**:
+  - Fresh checkouts must run `pio test -e native` to verify new host tests pass.
+  - Kconfig defaults set; `menuconfig` can override server + TZ if needed.
+  - Manual bench verification: `curl http://192.168.x.x/api/now` and
+    `curl http://192.168.x.x/api/history` before/after AP reboot to confirm time_valid state.
 
 ### 2026-08-20 - Phase 4: mDNS managed component and cppcheck suppression added
 - **What Changed**:
