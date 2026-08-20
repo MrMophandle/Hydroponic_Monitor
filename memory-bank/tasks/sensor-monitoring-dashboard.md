@@ -2,13 +2,13 @@
 slug: sensor-monitoring-dashboard
 legacy_id:
 feature: sensor-monitoring-dashboard
-status: PLANNING_COMPLETE
+status: BUILD_COMPLETE
 ---
 
 # sensor-monitoring-dashboard: Hydroponic Sensor Monitoring Dashboard
 
 **Complexity**: Level 4
-**Status**: PLANNING_COMPLETE
+**Status**: BUILD_COMPLETE
 **Roadmap**: sensor-monitoring-dashboard
 **Branch**: feature/sensor-monitoring-dashboard
 **Worktree**: N/A (primary checkout)
@@ -705,10 +705,28 @@ roadmap item (it turns this from a monitor into a control system): relay fail-sa
 (which escalates from cosmetic to safety-relevant once a GPIO drives a pump).
 
 Phase 6 — web UI:
-- [ ] `src/web/index.html`, `src/web/style.css`, `src/web/app.js`
-- [ ] `src/CMakeLists.txt` — **extend**: `EMBED_FILES` for the web assets. Note this file is
-      currently PlatformIO-generated boilerplate; from this phase it becomes hand-maintained.
-- [ ] `src/main.c` — **extend**: `app_main()` wiring for all subsystems
+- [x] `src/web/index.html`, `src/web/style.css`, `src/web/app.js`, `src/web/dashboard-logic.js`
+      (pure browser logic — third instance of Pure-Logic/Device-Only Split, first in the browser)
+- [x] `src/CMakeLists.txt` — **extend**: scoped the source glob to `*.c`/`*.h` so `src/web/*` is
+      never compiled as C. Note this file is now hand-maintained (was PlatformIO-generated
+      boilerplate through Phase 5).
+- [x] `src/main.c` — **not modified**: `app_main()`'s subsystem wiring (sampler, Wi-Fi, HTTP)
+      was already complete as of Phase 5; Phase 6 only changes what `http_api.c` serves, not
+      the boot sequence.
+- [x] `embed_web_assets.py` — **new, not in the original plan**: a PlatformIO `extra_scripts`
+      entry replacing both of PlatformIO's documented embed mechanisms (`idf_component_register`
+      `EMBED_TXTFILES` and `board_build.embed_txtfiles`), neither of which links the generated
+      `_binary_*` object into `firmware.elf` under this project's pinned
+      `platform = espressif32@6.9.0` — see techContext.md § Web Asset Embedding for the full
+      investigation. Verified via clean rebuild (`rm -rf .pio/build && pio run`).
+- [x] `test/web/dashboard-logic.test.mjs` — **new, not in the original plan**: 15 tests via
+      Node's built-in `node --test` (zero dependencies), added because the repo's commit-integrity
+      gate treats any committed `.js` file as production code requiring a paired test file.
+      `dashboard-logic.js` is pure logic with zero DOM/fetch/timer access, so it qualified for
+      host testing the same way `reading_store_core` and `reading_json` did; `app.js`,
+      `index.html`, `style.css`, and `http_api.c`'s new routes remain bench-verify-only per the
+      original Test Strategy (browser rendering and `esp_http_server` routing are not
+      host-testable).
 
 ### Phases
 - [x] Phase 1: Foundation & test harness — board config corrected, `[env:native]` running,
@@ -734,7 +752,14 @@ Phase 6 — web UI:
       39/39 native tests (6 new `reading_json` + 2 extended `reading_store`). Device: 32.6% RAM,
       29.9% flash, 0 warnings. `reading_json` is the Pure-Logic/Device-Only Split's second
       instance. No new managed IDF components (SNTP + `esp_http_server` are in-tree ESP-IDF).
-- [ ] Phase 6: Web UI — embedded page, live values, 24-hour chart, offline/`FAULT` badges
+- [x] Phase 6: Web UI — embedded dashboard (`index.html`/`style.css`/`app.js`/`dashboard-logic.js`)
+      serving live values, a 24-hour chart, and offline/`UNKNOWN`/`FAULT` badges from the
+      existing `/api/now`+`/api/history` JSON API; `GET /` now serves the real page (replacing
+      the Phase 5 placeholder), plus new `/style.css`, `/app.js`, `/dashboard-logic.js` static
+      routes. 39 C tests unchanged + 15 new JS tests (`node --test test/web/`) = 54 host-run
+      tests project-wide. Device: 32.6% RAM, 30.4% flash, 0 warnings. Code review: one blocking
+      round (self-contradictory build-mechanism comments), fixed and re-verified, then APPROVED.
+      **This was the final planned phase — v1 is feature-complete.**
 
 ## Creative Phases
 
@@ -744,10 +769,20 @@ Phase 6 — web UI:
 
 ## Execution State
 
-**Build Status**: IDLE
-**Current Phase**: BUILD (Phase 6 next)
-**Last Completed**: Phase 5 — HTTP API + wall-clock time — committed to feature/sensor-monitoring-dashboard
-**Can Resume**: NO — Phase 5 is fully committed; next /bmb:build starts Phase 6 fresh
+**Build Status**: COMPLETE
+**Current Phase**: All 6 phases complete — v1 feature-complete
+**Last Completed**: Phase 6/6 — Web UI — committed to feature/sensor-monitoring-dashboard
+**Can Resume**: NO — all planned phases are complete. Next steps: /bmb:reflect, then /bmb:archive.
+
+### Guard & Recovery Log
+- Phase 6: commit-guard PASS on first run (no FAIL/recovery needed for the git artifact-integrity
+  check). Separately, Step 8 code review found 1 BLOCKING issue (self-contradictory comments in
+  `src/CMakeLists.txt`, `src/http_api.c`, `include/http_api.h` describing an abandoned embed
+  mechanism as if it were the working one) — fixed directly by the orchestrator (comment-only,
+  zero behavior change) per the established trivial-cleanup precedent (see Phase 5's orphaned
+  `esp_timer.h` include removal), re-verified with a device rebuild (0 warnings, same RAM/flash),
+  then re-reviewed to APPROVED. Not a TDD-invariant or artifact-loss failure — no Recovery Ladder
+  rung was needed.
 
 ### Phase 5 Scope Change (2026-08-20, user-approved)
 
@@ -1270,6 +1305,113 @@ attached in this environment):
   read), confirming the I2C-double-acquire fix is durable in practice
 - All previously-carried-forward Phase 1/2/3/4 hardware-verification items remain outstanding
   (unchanged by this phase)
+
+### Phase 6 — Web UI (2026-08-20) — FINAL PHASE
+
+**Step 3 — TDD Implementation**
+- Implemented `src/web/dashboard-logic.js`: pure browser logic, zero DOM/`fetch`/timer access —
+  the third instance of the Pure-Logic/Device-Only Split pattern (after `reading_store_core`/
+  `reading_store` and `reading_json`) and its first application in the browser layer. Covers
+  timestamp formatting that distinguishes `time_valid:false` from a real date, per-metric
+  live/offline badge derivation, level badge derivation (FAULT kept distinct, never resolved to
+  a neighboring band), pre-first-sample detection (AC-ASYNC-1), and history gap-preservation
+  (`null` entries stay `null` through the chart-series transform, never coerced to `0`).
+- Implemented `src/web/app.js`: thin DOM-only wrapper. Polls `/api/now` and `/api/history?points=180`
+  every 30s (matching the sample interval); renders "waiting for first reading" before the first
+  sample via `dashboard-logic.js`'s pre-first-sample check; draws the 24h chart on a plain
+  `<canvas>` (no external library, no CDN — LAN has no guaranteed internet path) with pen-lifts at
+  `null` entries so gaps render as gaps, never a plunge to zero; a failed poll leaves the
+  last-known state visible rather than wiping it (the browser-side analog of AC-ERROR-1).
+- Implemented `src/web/index.html` (three value cards + badges + chart canvas) and
+  `src/web/style.css` (level/badge state conveyed by literal text — `FULL`/`MID`/`LOW`/`FAULT`/
+  `live`/`offline`/`UNKNOWN` — never by color alone, per the Accessibility NFR).
+- Extended `src/http_api.c`/`include/http_api.h`: removed the Phase 5 `PLACEHOLDER_INDEX_HTML`;
+  `root_get_handler` now serves the real embedded `index.html`; added `/style.css`, `/app.js`,
+  `/dashboard-logic.js` GET handlers following the existing `esp_err_t`-checked/`ESP_LOGE`-on-
+  failure shape. No new user-input surface (only the pre-existing `points` param remains).
+- Extended `src/CMakeLists.txt`: scoped the source glob to `*.c`/`*.h` explicitly so `src/web/*`
+  is never compiled as C.
+- **Build-system finding, not in the original plan**: neither of PlatformIO's two documented
+  embed mechanisms actually links under this project's pinned `platform = espressif32@6.9.0` —
+  `idf_component_register`'s `EMBED_TXTFILES` fails at build time ("source not found" for a
+  non-"main"-named component); `board_build.embed_txtfiles` generates the assembly correctly but
+  never compiles/links it ("undefined reference" at link time). New `embed_web_assets.py`
+  (`extra_scripts` entry in `platformio.ini`) works around this: it manually invokes ESP-IDF's
+  `data_file_embed_asm.cmake`, compiles the result, and appends the object to `LINKFLAGS` (read
+  live at link time, unlike the DAG-snapshotted `PIOBUILDFILES`) plus an explicit `env.Depends()`
+  on the firmware ELF. Verified via a clean rebuild (`rm -rf .pio/build && pio run`) to link
+  correctly and to survive `pio run --target clean`. Full investigation recorded in
+  `techContext.md` § Web Asset Embedding.
+- **Test Strategy exception, not in the original plan**: the plan declared "Phase 6 — no host
+  tests" (browser rendering and `esp_http_server` routing are genuinely not host-testable). The
+  repo's commit-integrity gate, however, treats any committed `.js` file as production code
+  requiring a paired test file with no override. Since `dashboard-logic.js` is pure logic, it
+  qualified for host testing the same way `reading_store_core`/`reading_json` did: new
+  `test/web/dashboard-logic.test.mjs` (15 tests, Node's built-in `node --test`, zero
+  dependencies/no `package.json`) exercises it. `app.js`, `index.html`, `style.css`, and
+  `http_api.c`'s new routes remain bench-verify-only, unchanged from the original plan.
+- RED CONFIRMED (module-not-found for `dashboard-logic.js` — 15 tests failed for the right
+  reason, not a setup error) → GREEN (15/15).
+
+**Step 6/7 — Batch Testing / Integration Verification** (delegated to `bmb:build-verifier-agent`)
+- `node --test test/web/`: **15/15 PASS**
+- `pio test -e native`: **39/39 PASS**, unchanged (zero new C tests this phase, by design)
+- `pio run -e esp32-s3-devkitm-1`: **SUCCESS, 0 compiler warnings** on a clean rebuild
+  (`rm -rf .pio/build`) — RAM 32.6% (106,692/327,680 B), Flash 30.4% (957,040/3,145,728 B)
+- `pio check -e esp32-s3-devkitm-1`: PASS; 9 LOW findings, all matching the pre-existing
+  link-time-stub-seam `unusedFunction` baseline — nothing new
+- Verdict: PASS, no phase-relevant failures; no `undefined reference` regressions from the new
+  embed script
+
+**Step 8 — Code Review**
+- Initial verdict: **CHANGES REQUESTED** — 1 blocking issue: `src/CMakeLists.txt`,
+  `src/http_api.c`, and `include/http_api.h` each carried a comment asserting
+  `board_build.embed_txtfiles`/`EMBED_TXTFILES` was the working embed mechanism, directly
+  contradicting `platformio.ini` (which shows `extra_scripts = embed_web_assets.py`) and
+  `embed_web_assets.py`'s own accurate docstring — both alternatives were tried and abandoned,
+  not the mechanism actually running. Flagged as blocking because a future maintainer trusting
+  the stale comment could "simplify" the build back to the broken mechanism.
+- Fix applied directly (orchestrator, comment-only, zero behavior change): all three comment
+  blocks corrected to describe the real mechanism and explicitly list both abandoned attempts
+  with their failure modes. Re-verified with a device rebuild: 0 warnings, same RAM/flash
+  (32.6%/30.4%), confirming the fix changed no compiled behavior.
+- Re-review: **APPROVED**. Embed workaround assessed sound (survives `pio run --target clean`;
+  SCons correctly detects a changed `src/web/*` asset via the `env.Command` source dependency and
+  re-links via the explicit `env.Depends()`); symbol names cross-checked against `http_api.c`'s
+  externs — all 4 assets match. Non-blocking notes: an empty placeholder `<style>` tag in
+  `index.html` with a comment overstating its fallback value; two unused variables in `app.js`
+  (`haveFirstSample`, `latestSeries`); no `Cache-Control` header on the three static-asset
+  routes (all LOW-priority polish, not applied this phase).
+- Security review: PASS — no new user-input surface, zero new dependencies (no `package.json`;
+  Node's built-in test runner only).
+
+**Step 9 — Documentation**
+- `techContext.md`: status banner updated (all 6 phases complete, 54 total host tests, final
+  RAM/flash); § API & Communication extended with the 3 new static-asset routes; new
+  § Web Asset Embedding section recording the `EMBED_TXTFILES`/`board_build.embed_txtfiles`
+  investigation; § Development Commands gained `node --test test/web/`; Phase 6 entry added to
+  Recent Technology Changes.
+- `systemPatterns.md`: status banner updated to "ALL 6 PHASES COMPLETE — PROJECT
+  FEATURE-COMPLETE FOR v1"; High-Level Architecture diagram redrawn to add the browser layer and
+  the 4 static-asset routes; Pure-Logic/Device-Only Split section extended to name
+  `dashboard-logic.js`/`app.js` as its third instance and first browser-layer application; Code
+  Organization Patterns extended to record `src/web/`, `test/web/`, and root-level
+  `embed_web_assets.py` as intentional, scoped exceptions to the C-only convention; Phase 6 entry
+  added to Recent Architecture Changes.
+- `productBrief.md`: not updated — already documents the web-dashboard delivery channel; no
+  product-context change from this phase.
+- Committed separately (docs-only commit, `0d216bd`) ahead of this phase's code+test commit —
+  matching the Phase 5 precedent — both land on `feature/sensor-monitoring-dashboard` before the
+  branch is considered ready for `/bmb:reflect`.
+
+**Outstanding manual hardware-verification items from Phase 6** (carried forward — no board
+attached in this environment):
+- The page loads from a bookmark on a real device on the LAN, values refresh without a manual
+  reload within ~30s, the 24-hour chart renders, and offline/`FAULT` badges appear when a sensor
+  is physically disconnected (the phase's own Test Strategy exit criterion)
+- All previously-carried-forward Phase 1/2/3/4/5 hardware-verification items remain outstanding
+  (unchanged by this phase) — **all of these are now consolidated as pre-`/bmb:archive` bench
+  work**, since this was the final planned phase
 
 ---
 

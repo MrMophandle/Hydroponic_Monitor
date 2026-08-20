@@ -3,6 +3,7 @@
  */
 #include "http_api.h"
 
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -24,13 +25,24 @@ static const char *TAG = "http_api";
 #define POINTS_MAX 500
 #define POINTS_DEFAULT 180
 
-static const char *PLACEHOLDER_INDEX_HTML =
-    "<!DOCTYPE html><html><head><title>Hydroponic Monitor</title></head>"
-    "<body><h1>Hydroponic Monitor</h1>"
-    "<p>Dashboard coming in Phase 6. Live JSON is available at "
-    "<a href=\"/api/now\">/api/now</a> and "
-    "<a href=\"/api/history\">/api/history</a>.</p>"
-    "</body></html>";
+/* Embedded dashboard assets (Phase 6), via the `extra_scripts =
+ * embed_web_assets.py` entry in platformio.ini (see src/CMakeLists.txt and
+ * embed_web_assets.py's module docstring for why this hand-rolled script is
+ * used instead of idf_component_register's EMBED_TXTFILES or PlatformIO's
+ * own board_build.embed_txtfiles — both were tried and both failed to link
+ * under this platform/version). Each file is linked into the firmware image
+ * as a null-terminated byte array, under a symbol name derived from the
+ * file's BASENAME (not its full path) with non-identifier characters
+ * replaced by `_`. Null-termination is what makes HTTPD_RESP_USE_STRLEN
+ * valid on these buffers below. */
+extern const uint8_t index_html_start[] asm("_binary_index_html_start");
+extern const uint8_t index_html_end[] asm("_binary_index_html_end");
+extern const uint8_t style_css_start[] asm("_binary_style_css_start");
+extern const uint8_t style_css_end[] asm("_binary_style_css_end");
+extern const uint8_t app_js_start[] asm("_binary_app_js_start");
+extern const uint8_t app_js_end[] asm("_binary_app_js_end");
+extern const uint8_t dashboard_logic_js_start[] asm("_binary_dashboard_logic_js_start");
+extern const uint8_t dashboard_logic_js_end[] asm("_binary_dashboard_logic_js_end");
 
 /** Adapts reading_json's write callback to esp_http_server's chunked send.
  * `ctx` is the httpd_req_t* for the in-flight request. */
@@ -60,7 +72,34 @@ static esp_err_t root_get_handler(httpd_req_t *req) {
         ESP_LOGE(TAG, "httpd_resp_set_type failed: %s", esp_err_to_name(err));
         return err;
     }
-    return httpd_resp_send(req, PLACEHOLDER_INDEX_HTML, HTTPD_RESP_USE_STRLEN);
+    return httpd_resp_send(req, (const char *)index_html_start, HTTPD_RESP_USE_STRLEN);
+}
+
+static esp_err_t style_css_get_handler(httpd_req_t *req) {
+    esp_err_t err = httpd_resp_set_type(req, "text/css");
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "httpd_resp_set_type failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    return httpd_resp_send(req, (const char *)style_css_start, HTTPD_RESP_USE_STRLEN);
+}
+
+static esp_err_t app_js_get_handler(httpd_req_t *req) {
+    esp_err_t err = httpd_resp_set_type(req, "application/javascript");
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "httpd_resp_set_type failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    return httpd_resp_send(req, (const char *)app_js_start, HTTPD_RESP_USE_STRLEN);
+}
+
+static esp_err_t dashboard_logic_js_get_handler(httpd_req_t *req) {
+    esp_err_t err = httpd_resp_set_type(req, "application/javascript");
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "httpd_resp_set_type failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    return httpd_resp_send(req, (const char *)dashboard_logic_js_start, HTTPD_RESP_USE_STRLEN);
 }
 
 static esp_err_t now_get_handler(httpd_req_t *req) {
@@ -204,6 +243,21 @@ esp_err_t http_api_start(void) {
         .method = HTTP_GET,
         .handler = root_get_handler,
     };
+    static const httpd_uri_t style_css_uri = {
+        .uri = "/style.css",
+        .method = HTTP_GET,
+        .handler = style_css_get_handler,
+    };
+    static const httpd_uri_t app_js_uri = {
+        .uri = "/app.js",
+        .method = HTTP_GET,
+        .handler = app_js_get_handler,
+    };
+    static const httpd_uri_t dashboard_logic_js_uri = {
+        .uri = "/dashboard-logic.js",
+        .method = HTTP_GET,
+        .handler = dashboard_logic_js_get_handler,
+    };
     static const httpd_uri_t now_uri = {
         .uri = "/api/now",
         .method = HTTP_GET,
@@ -220,6 +274,21 @@ esp_err_t http_api_start(void) {
         ESP_LOGE(TAG, "register / failed: %s", esp_err_to_name(err));
         return err;
     }
+    err = httpd_register_uri_handler(server, &style_css_uri);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "register /style.css failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    err = httpd_register_uri_handler(server, &app_js_uri);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "register /app.js failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    err = httpd_register_uri_handler(server, &dashboard_logic_js_uri);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "register /dashboard-logic.js failed: %s", esp_err_to_name(err));
+        return err;
+    }
     err = httpd_register_uri_handler(server, &now_uri);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "register /api/now failed: %s", esp_err_to_name(err));
@@ -231,6 +300,7 @@ esp_err_t http_api_start(void) {
         return err;
     }
 
-    ESP_LOGI(TAG, "HTTP API started: /, /api/now, /api/history");
+    ESP_LOGI(TAG, "HTTP API started: /, /style.css, /app.js, /dashboard-logic.js, "
+                  "/api/now, /api/history");
     return ESP_OK;
 }

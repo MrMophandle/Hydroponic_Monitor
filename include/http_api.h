@@ -1,6 +1,6 @@
 /**
- * http_api — device-only `esp_http_server` wrapper exposing `/`, `/api/now`,
- * and `/api/history`.
+ * http_api — device-only `esp_http_server` wrapper exposing `/`, `/style.css`,
+ * `/app.js`, `/dashboard-logic.js`, `/api/now`, and `/api/history`.
  *
  * Owns NO sensor peripheral (systemPatterns.md § Guiding Principles → One
  * Owner Per Peripheral): every reading served here comes from
@@ -20,12 +20,19 @@
  * documented cross-half contract, which names this file as the responsible
  * device-only caller.
  *
- * `/` currently serves a placeholder page — the real embedded dashboard
- * (HTML/CSS/JS, live values, 24h chart) is Phase 6's responsibility.
+ * `/` now serves the real embedded dashboard (Phase 6): `index.html`,
+ * `style.css`, `app.js`, and `dashboard-logic.js` are embedded into the
+ * firmware image via the `embed_web_assets.py` extra_script (platformio.ini
+ * — see src/CMakeLists.txt for why this replaces both of PlatformIO's
+ * documented embed mechanisms) and served verbatim from flash — no
+ * template rendering, no dynamic HTML generation.
  *
  * Not host-testable: esp_http_server request routing requires the real
  * framework and is out of scope for `[env:native]` per the Test Strategy;
- * verified manually with `curl` at the bench.
+ * verified manually with `curl`/browser at the bench. The dashboard's pure
+ * logic (src/web/dashboard-logic.js) IS host-tested — see
+ * test/web/dashboard-logic.test.mjs — as the browser-side instance of this
+ * project's Pure-Logic/Device-Only Split.
  */
 #ifndef HYDROPONIC_MONITOR_HTTP_API_H
 #define HYDROPONIC_MONITOR_HTTP_API_H
@@ -37,7 +44,8 @@ extern "C" {
 #endif
 
 /**
- * Starts the HTTP server and registers `/`, `/api/now`, and `/api/history`.
+ * Starts the HTTP server and registers `/`, `/style.css`, `/app.js`,
+ * `/dashboard-logic.js`, `/api/now`, and `/api/history`.
  * Call once from app_main(), after wifi_conn_start() (the dashboard is
  * reachable once Wi-Fi associates; the server itself does not require an
  * active connection to start listening).

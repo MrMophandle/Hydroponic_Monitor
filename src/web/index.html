@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Hydroponic Monitor</title>
+  <style>
+    /* style.css is served separately at /style.css and linked below; this
+       inline fallback keeps the page usable even if that request fails. */
+  </style>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <h1>Hydroponic Monitor</h1>
+
+  <section class="cards">
+    <div class="card" id="card-temp">
+      <h2>Water Temperature</h2>
+      <p class="value" id="temp-value">waiting for first reading</p>
+      <span class="badge" id="temp-badge"></span>
+    </div>
+
+    <div class="card" id="card-light">
+      <h2>Ambient Light</h2>
+      <p class="value" id="light-value">waiting for first reading</p>
+      <span class="badge" id="light-badge"></span>
+    </div>
+
+    <div class="card" id="card-level">
+      <h2>Water Level</h2>
+      <p class="value" id="level-value">waiting for first reading</p>
+      <span class="badge" id="level-badge"></span>
+    </div>
+  </section>
+
+  <section class="chart-section">
+    <h2>Last 24 Hours</h2>
+    <canvas id="history-chart" width="900" height="320"></canvas>
+    <p class="poll-status" id="poll-status">loading&hellip;</p>
+  </section>
+
+  <!-- Load order per systemPatterns.md Pure-Logic/Device-Only Split:
+       the pure logic module first, then the DOM-only wiring that depends
+       on it. No CDN scripts — this dashboard must work with no internet
+       path, LAN-only. -->
+  <script src="/dashboard-logic.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
