@@ -651,6 +651,16 @@ Phase 2 — sensor drivers:
 - [x] `test/test_level_switches/test_level_switches.c` — 10 tests (4 truth-table
       combinations, debounce rejection, flapping-never-commits, sustained-commits,
       FAULT-never-resolved-to-neighbor, polarity inversion)
+- [x] `sdkconfig.defaults` — **new**: pins `CONFIG_ESPTOOLPY_FLASHSIZE_16MB`. Added by the
+      Phase 2 remediation; `board_upload.flash_size` alone never reaches the IDF build config,
+      so the flash was being declared as 2 MB under a 3 MB app partition
+- [x] `src/Kconfig.projbuild` — **new**: menu "Hydroponic Monitor" — the three sensor pin
+      groups plus per-switch polarity inverts, satisfying the plan's "pins, intervals,
+      thresholds, and debounce count are Kconfig values, not literals" principle
+- [x] `src/main.c` — **extend**: `app_main()` performs the one-shot boot read (M3's Phase 2
+      exit criterion) and logs the Phase 1 DRAM baseline. This is also what puts the phase's
+      four modules into the firmware image — see the remediation note in Execution State.
+      Full subsystem wiring (sampler, Wi-Fi, HTTP) still belongs to its later phases.
 
 Phase 3 — sampler and store integration:
 - [ ] `lib/sensor_hub/include/sensor_hub.h`, `lib/sensor_hub/src/sensor_hub.c`
@@ -678,9 +688,9 @@ Phase 6 — web UI:
       ring buffer TDD'd, secrets file gitignored
 - [x] Phase 2: Sensor drivers — `bh1750`, `ds18b20_probe`, `level_switches`, `device_status`
       built; `level_switches` state machine host-tested (10 tests, 21/21 total on
-      `[env:native]`); device build clean. **The one-shot boot-time serial read is deferred**
-      — see Execution State note below: the roadmap's own New Source Files list assigns
-      `src/main.c` wiring to Phase 6 only, so no call site exists yet to perform it
+      `[env:native]`); device build clean. The one-shot boot-time serial read **is wired** in
+      `src/main.c` (initially deferred, then restored — see the Phase 2 remediation note in
+      Execution State); on-hardware confirmation of the printed values remains outstanding
 - [ ] Phase 3: Sampler & store — 30-second sampling into the ring, failure escalation,
       watchdog subscription **scoped to the read window only**
 - [ ] Phase 4: Connectivity — Wi-Fi station with backoff reconnect, mDNS hostname, and the
@@ -702,32 +712,79 @@ Phase 6 — web UI:
 **Last Completed**: Phase 2 (sensor drivers) — committed to feature/sensor-monitoring-dashboard
 **Can Resume**: NO — Phase 2 fully committed; next /bmb:build starts Phase 3 fresh
 
-**Outstanding manual hardware-verification items from Phase 1** (carried forward, unchanged —
+**Outstanding manual hardware-verification items from Phase 1** (carried forward —
 this environment still has no board attached):
 - AC-ERROR-6 build-failure check (rename `include/wifi_secrets.h` away, confirm `pio run`
   fails naming both it and the `.example`, restore)
-- DRAM free-heap baseline log at boot (`esp_get_free_heap_size()`), for the Phase 5 re-check
+- DRAM free-heap baseline log at boot (`esp_get_free_heap_size()`), for the Phase 5 re-check.
+  **Now wired** — `app_main()` logs it on every boot; only the physical boot is left.
 - Both device environments boot and print over serial on real hardware
 
 **Outstanding manual hardware-verification items from Phase 2** (not blocking the commit —
 no board attached — but must be done before Phase 2 is considered fully closed per the Test
 Strategy):
 - One-shot read of all three sensors at boot, printed over serial, confirming plausible lux/
-  °C/level values. **This cannot be performed yet even on hardware**: the Implementation
-  Roadmap's New Source Files list assigns `src/main.c` `app_main()` wiring for all subsystems
-  to **Phase 6 only** — Phase 2 deliberately does not touch `src/main.c` (drivers are built and
-  compile-verified in isolation, with no call site). This is a real gap between the Phases
-  summary line (which describes a one-shot boot read as Phase 2's hardware exit criterion) and
-  the New Source Files roadmap (which defers all `main.c` wiring to Phase 6). Flagging rather
-  than silently resolving it: the TDD build for this phase followed the New Source Files list
-  (the more specific, file-level source of truth) and left `src/main.c` untouched. If a
-  one-shot boot read is genuinely wanted before Phase 6, a human should decide whether to pull
-  a minimal temporary wiring stub into Phase 3 or accept combined verification at Phase 6.
+  °C/level values. The **call site now exists** (`src/main.c`, added by the remediation below),
+  so this is a pure bench step: flash, watch the serial log, sanity-check the three values.
+  Verify the Kconfig pin defaults match the actual wiring first — they were chosen from the
+  board's constraints, not from a wiring diagram.
 - Float-switch polarity confirmed by physically raising/lowering each float (sets the real
   `invert_high`/`invert_low` values at the Phase 3+ call site — `level_switches`' own tests
   already cover both polarities in the abstract).
 - Confirm whether the DROK DS18B20 adapter board already populates the 4.7 kΩ pull-up before
   adding the loose resistor.
+
+### Phase 2 Remediation (2026-08-19, post-phase human review)
+
+Human review at the Phase 2 gate re-ran the build independently and found two defects the
+phase's own verification had missed. Both are fixed; build, tests, and lint re-run clean.
+
+**1. Flash declared as 2 MB on a 16 MB board.** Every build printed `Warning! Flash memory
+size mismatch detected. Expected 16MB, found 2MB!` and it was going unread.
+`platformio.ini`'s `board_upload.flash_size = 16MB` configures only the *upload* tool — it
+never reaches the IDF build config, so `CONFIG_ESPTOOLPY_FLASHSIZE` sat at its 2 MB default
+while `partitions.csv` placed a 3 MB factory app at `0x10000`, running past the 2 MB boundary
+the bootloader is told about. Fixed by a new `sdkconfig.defaults`; the tracked
+`sdkconfig.esp32-s3-devkitm-1` was regenerated and diffed to confirm no unrelated drift.
+Note this contradicts Phase 1's "board corrected" claim — the board *record* was corrected,
+the flash size was not.
+
+**2. None of Phase 2's code was in the firmware, and `level_switches` never cross-compiled.**
+Nothing in `src/` referenced the four new modules, so the linker dropped all four archives:
+`nm firmware.elf` matched **zero** Phase-2 symbols, and flash usage was byte-identical to
+Phase 1 (206,228 B) after adding four driver modules. `level_switches` — the phase's
+centerpiece, carrying all 10 new tests — had only ever been compiled by the *host* toolchain,
+so it could have failed to build for xtensa with the suite still green. The phase's
+"device build clean" signal was therefore near-vacuous as evidence about Phase 2's code.
+
+Fixed by wiring `app_main()` to call into all four modules, which is what the Phases summary
+(and critique finding **M3**) named as Phase 2's exit criterion all along. The earlier
+decision to follow the New Source Files list and defer this to Phase 6 was the root cause of
+defect 2 — it would have left this code unlinked and un-cross-compiled for four more phases.
+Pins and polarity went into `src/Kconfig.projbuild` rather than literals in `main.c`, per the
+plan's Kconfig principle.
+
+**Verification after the fix** (PIO Core 6.1.19; `.pio` wiped for a true from-scratch build):
+
+| | Before | After |
+|---|---|---|
+| `level_switches` cross-compiled | never | `level_switches.o` (xtensa) |
+| Phase-2 symbols in `firmware.elf` | 0 | 11 |
+| Flash / RAM used | 206,228 B / 13,060 B | 270,864 B / 14,128 B |
+| Flash-mismatch warnings per build | 1 | 0 |
+
+Build SUCCESS with 0 compiler warnings · `pio test -e native` 21/21 PASS · `pio check`
+PASSED (1 LOW: the pre-existing `app_main is never used` cppcheck false positive — IDF's
+startup code calls it).
+
+**Process learning for `/bmb:reflect`**: a green "device build clean" gate proved almost
+nothing here, because unreferenced `lib/` modules compile, archive, and are then silently
+dropped at link. A build-level assertion that new modules actually reach the image (symbol
+presence, or simply a non-trivial change in flash usage) would have caught this inside the
+phase. The same blind spot hides any `lib/` module added before its call site exists.
+Independently: two PlatformIO cores are installed on this machine (`~/.platformio/penv`
+6.1.19 and a pyenv shim at 6.1.17); the stale shim produces spurious CMake/toolchain
+failures on a cold build. Worth removing.
 
 **BRAINSTORM CRITIQUE**: anthropic — configured:anthropic (verdict REVISE; 3 high, 4 medium,
 3 low — all applied)

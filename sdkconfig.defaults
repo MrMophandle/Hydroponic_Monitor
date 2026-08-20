@@ -1,0 +1,18 @@
+# ESP-IDF build defaults for the Hosyond ESP32-S3-WROOM-1 N16R8 (16 MB flash).
+#
+# Why this file exists: `board_upload.flash_size = 16MB` in platformio.ini tells
+# only the *upload* tooling how large the flash is — it never reaches the IDF
+# build configuration. Without the settings below, CONFIG_ESPTOOLPY_FLASHSIZE
+# falls back to its 2MB default, which
+#
+#   1. makes every build print "Warning! Flash memory size mismatch detected.
+#      Expected 16MB, found 2MB!", and
+#   2. under-declares the flash in the image header written to the bootloader,
+#      while partitions.csv places a 3 MB factory app at 0x10000 that runs to
+#      0x310000 — past the 2 MB (0x200000) boundary the bootloader is told about.
+#
+# The partition table itself is supplied by PlatformIO from
+# `board_build.partitions = partitions.csv`; do not restate it here.
+CONFIG_ESPTOOLPY_FLASHSIZE_2MB=n
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
