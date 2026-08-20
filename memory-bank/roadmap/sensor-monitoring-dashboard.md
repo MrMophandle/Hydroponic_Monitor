@@ -1,6 +1,7 @@
 ---
 version: next
-status: planned
+status: completed
+completed: 2026-08-20
 priority: high
 complexity: 4
 linked_tasks: [sensor-monitoring-dashboard]

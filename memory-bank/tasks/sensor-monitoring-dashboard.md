@@ -2,13 +2,15 @@
 slug: sensor-monitoring-dashboard
 legacy_id:
 feature: sensor-monitoring-dashboard
-status: REFLECTION_COMPLETE
+status: COMPLETE
 ---
 
 # sensor-monitoring-dashboard: Hydroponic Sensor Monitoring Dashboard
 
 **Complexity**: Level 4
-**Status**: REFLECTION_COMPLETE
+**Status**: COMPLETE
+**Completed**: 2026-08-20
+**Archived**: `memory-bank/archive/sensor-monitoring-dashboard-archive.md`
 **Reflection**: `memory-bank/reflection/sensor-monitoring-dashboard-reflection.md`
 **Roadmap**: sensor-monitoring-dashboard
 **Branch**: feature/sensor-monitoring-dashboard
@@ -771,9 +773,15 @@ Phase 6 — web UI:
 ## Execution State
 
 **Build Status**: IDLE
-**Current Phase**: REFLECT → ARCHIVE
-**Last Completed**: REFLECT — `memory-bank/reflection/sensor-monitoring-dashboard-reflection.md`
-**Can Resume**: NO — reflection complete. Next step: /bmb:archive sensor-monitoring-dashboard.
+**Current Phase**: COMPLETE
+**Last Completed**: ARCHIVE — `memory-bank/archive/sensor-monitoring-dashboard-archive.md`
+**Can Resume**: NO
+
+> **Software-complete, not bench-verified.** The archive's *Future Considerations* section
+> carries the outstanding hardware-verification punch list. First bring-up (2026-08-20)
+> confirmed the device boots and uploads; it also found the serial console unreadable at
+> PlatformIO's default 9600 monitor baud (fixed in `platformio.ini`, commit `dd43354`),
+> which was the prerequisite for every remaining bench item.
 
 ### Completed Steps (REFLECT)
 - Step 1 - Verify Prerequisites: COMPLETE (2026-08-20 14:53 EDT) — all 6 implementation phases `[x]`

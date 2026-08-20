@@ -27,6 +27,7 @@ memory-bank/.local/
 .agent-logs/claude/
 .agent-logs/telemetry/
 .agent-logs/telemetry.jsonl
+.agent-logs/__pycache__/
 
 # Claude Code command output logs (verification runs, etc.)
 .claude-logs/
