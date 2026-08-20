@@ -109,6 +109,19 @@ uint8_t reading_store_core_is_full(const reading_store_core_t *store);
  * `points` is NOT clamped to any maximum here — the caller (the HTTP layer,
  * in a later phase) is responsible for bounding it before calling.
  *
+ * PRECONDITION — constant sample period (cross-half contract). "Evenly
+ * spaced" here means evenly spaced **by index**, which is only evenly spaced
+ * **in time** if entries were pushed at a constant period. This module is
+ * pure and cannot enforce that; the writer must. The responsible writer is
+ * the sampler task (`src/sampler.c`), which holds the period constant with
+ * `xTaskDelayUntil()` and logs a warning if a cycle ever overruns the
+ * interval. If a future writer pushes at a variable rate, the samples this
+ * function returns will be unevenly spaced in time and any chart drawn from
+ * them will have a distorted x-axis — at which point entries need to carry
+ * their own timestamps and selection needs to interpolate over time rather
+ * than stride over indices. See systemPatterns.md § Pure-Logic / Device-Only
+ * Split → "the split hides cross-half contracts".
+ *
  * Returns the number of entries actually written to `out` (0..points).
  */
 uint16_t reading_store_core_downsample(const reading_store_core_t *store, sensor_reading_t *out,

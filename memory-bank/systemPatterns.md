@@ -5,9 +5,13 @@ This file documents the architectural patterns, design patterns, and system stru
 > **Status (2026-08-20)**: Phase 4 of sensor-monitoring-dashboard landed. `lib/wifi_backoff/`
 > (pure exponential backoff delay calculation) and `src/wifi_conn.c` (Wi-Fi station mode, mDNS
 > registration, serial-logged IP fallback) are now **built and tested**. Phases 1–4 complete
-> (31/31 native tests, 29.1% RAM, 27.5% flash). Phases 5–6 (`http_api`, web UI) remain
+> (31/31 native tests, 29.1% RAM, 27.6% flash). Phases 5–6 (`http_api`, web UI) remain
 > **planned, not yet built**. Do not treat this file as evidence those remaining files exist —
 > check `lib/`/`src/` directly.
+>
+> Also landed 2026-08-20: an audit of this file against ESP-IDF v5.3.1 best practices, and fixes
+> for deviations **D1–D4** it found (peripheral double-acquisition, `vTaskDelay` pacing, unchecked
+> returns). **D5 and D6 remain open** — see § Known Deviations.
 
 ## Guiding Principles
 
@@ -123,10 +127,12 @@ pure half. The pure half lives in `lib/<name>_core/` and is host-compilable; the
   property only the device half can supply, and nothing checks it. Live example:
   `reading_store_core_downsample()` selects "evenly-spaced samples" **by index**, which is only
   evenly spaced *in time* if the sample period is constant — but `src/sampler.c` uses `vTaskDelay`,
-  so the period varies with how long the reads took (see § Known Deviations → D3). The host tests
-  pass, because the assumption is invisible to them. **Rule**: when a pure module's correctness
-  depends on a timing, ordering, or units property, state it in the pure header as an explicit
-  precondition, and name the device-only module responsible for honoring it.
+  so the period varied with how long the reads took — and the host tests passed throughout,
+  because the assumption was invisible to them. (Fixed 2026-08-20: the sampler now paces with
+  `xTaskDelayUntil()`, and `reading_store_core_downsample()` states the constant-period
+  precondition and names the sampler as the writer responsible for it.) **Rule**: when a pure
+  module's correctness depends on a timing, ordering, or units property, state it in the pure
+  header as an explicit precondition, and name the device-only module responsible for honoring it.
 
 **When to reuse**: Whenever a module has both pure logic and FreeRTOS coupling:
 - A state machine (pure) with a queue-owned task wrapper (device-only).
@@ -231,14 +237,16 @@ the `range`, or validate with `GPIO_IS_VALID_GPIO()` at init and fail loudly.
   it because it is inconvenient.
 -->
 
-Recorded 2026-08-20, all still present as of Phase 4 (`cef3419`):
+Recorded 2026-08-20 against Phase 4 (`cef3419`). **D1–D4 were fixed the same day** — see § Recent
+Architecture Changes → "Espressif Best-Practice Fixes D1–D4 Applied"; the fix commit is the record
+of what they were. **D5 and D6 remain open.**
+
+Also still open, from § Espressif Platform Conventions rather than this table: `uptime_sec` is
+uptime rather than a real timestamp (SNTP), and Wi-Fi credentials are compiled into the image
+rather than read from NVS. Both are cheapest to change before Phase 5 freezes the JSON contract.
 
 | # | Deviation | Evidence | Impact |
 |---|---|---|---|
-| D1 | **I2C port 0 is acquired twice.** `read_light_once()` acquires it and never releases it; the sampler then tries to acquire it again, gets `ESP_ERR_INVALID_STATE`, and leaves `s_light_ready = false` forever. | `src/main.c:113` + `src/sampler.c:117`; `i2c_common.c:115` | **The BH1750 never produces a reading in the sampler.** It escalates to offline after 5 cycles (~2.5 min) and stays offline for the life of the boot, so the lux series is entirely invalid bits. Violates One Owner Per Peripheral. Fix: create the bus once in `app_main`, pass the handle. `src/sampler.c:107-114` calls this "an open item for Phase 3 hardware verification" — it is not open, it is answerable from the IDF source without a board. |
-| D2 | **1-Wire bus created twice on the same GPIO**, neither deleted. | `src/main.c:136` + `src/sampler.c:129` | Both succeed, permanently orphaning 1 RX + 1 TX of the S3's 4+4 RMT channels and binding two channels to one pin. Will surface later as an unrelated RMT allocation failure. Violates One Owner Per Peripheral. |
-| D3 | **Sampler uses `vTaskDelay` for a fixed-rate loop.** | `src/sampler.c:228` | Real period is ~31.1 s, not 30 s. Two knock-ons: the ring holds ~24.9 h, not the documented 24 h; and `reading_store_core_downsample()` picks samples **by index**, which is only evenly spaced in *time* if the period is constant — so the chart's x-axis is subtly wrong. Violates Periodic Work Uses Absolute Deadlines. |
-| D4 | **Unchecked `esp_err_t` / task-create returns.** `esp_task_wdt_add`/`_delete` and `xTaskCreatePinnedToCore` are all unchecked; `sampler_start()` returns `void`. | `src/sampler.c:208,210,232,234` | A failed task create (plausible once Wi-Fi has taken its DRAM) logs `"sampler started"` and then silently never samples. Violates Explicit Error Handling and Fail-Safe Defaults. |
 | D5 | **Kconfig GPIO ranges admit nonexistent and fatal pins** (`range 1 48` for all four pin options). | `src/Kconfig.projbuild:9,16,27,41,50` | The `comment` block warns in prose; the `range` enforces nothing. Violates Configuration Is Not Hard-Coded. |
 | D6 | **No coredump partition**, `CONFIG_ESP_COREDUMP_ENABLE_TO_NONE=y`. | `partitions.csv`; `sdkconfig.esp32-s3-devkitm-1` | An unattended crash leaves no post-mortem evidence. |
 
@@ -358,6 +366,50 @@ To populate this section, run `/bmb:c4`. The command builds a complete bottom-up
 <!-- AUTO-MANAGED: c4-architecture-end -->
 
 ## Recent Architecture Changes
+
+### 2026-08-20 - Espressif Best-Practice Fixes D1–D4 Applied (peripheral ownership, task pacing, error checking)
+- **What Changed**:
+  - **Single peripheral ownership (D1, D2)**. `src/sampler.c` is now the sole owner of every sensor
+    peripheral — the I2C master bus, the 1-Wire RMT bus, and the level-switch GPIO configuration —
+    acquired exactly once in the new `sampler_sensors_init()`. `app_main()` creates nothing: its
+    boot read goes through the same `sensor_hub_*_read()` seams the sampler task uses. `src/main.c`
+    consequently lost its `i2c_bus_create()`/`level_gpio_configure()` helpers, its three
+    `read_*_once()` functions, its polarity-normalizing macros, and its
+    `driver/i2c_master.h`/`driver/gpio.h`/`bh1750.h`/`ds18b20_probe.h` includes.
+    `sampler_sensors_init()` also rejects a second call rather than re-acquiring.
+  - **Absolute-deadline pacing (D3)**. The sampler loop uses `xTaskDelayUntil()` instead of a
+    trailing `vTaskDelay()`, and logs a warning if a cycle ever overruns the interval.
+    `reading_store_core_downsample()` now documents its constant-period precondition explicitly
+    and names the sampler as the writer responsible for it.
+  - **Checked returns (D4)**. `sampler_start()` returns `esp_err_t` and validates
+    `xTaskCreatePinnedToCore` against `pdPASS`; `app_main()` escalates a failure to
+    `DEVICE_STATUS_SENSOR_FAULT` instead of logging "sampler started" over a nonexistent task.
+    Both `esp_task_wdt_add`/`_delete` are checked.
+  - Removed the stale "open item for Phase 3 hardware verification" comment in `src/sampler.c` —
+    the question was answerable from the IDF source without a board, and the answer was "it fails".
+  - Corrected the TWDT comment in the sampler loop to state what the current config actually does
+    (5 s timeout, no panic → detector, not recovery).
+- **Reason**: D1 was not latent. The duplicate `I2C_NUM_0` acquire returned
+  `ESP_ERR_INVALID_STATE`, so `s_light_ready` stayed false and **the BH1750 produced no valid
+  reading from the sampler on any boot** — the lux series was entirely invalid bits, and Phase 5
+  was about to build a chart on top of it. D2 silently orphaned an RMT TX+RX pair out of the S3's
+  four. D3 broke the downsampler's even-spacing precondition, and D4 could hide a total sampling
+  failure behind a success log.
+- **Trade-offs**: `app_main()` no longer independently exercises the drivers, so the boot read is
+  no longer an *independent* check of the sensor path — it now shares all wiring with the sampler.
+  Accepted: that shared wiring is the point, and a boot read that passed while the sampler's path
+  was broken is exactly the false comfort D1 produced. Also, moving ownership into `sampler.c`
+  means the module now does two jobs (peripheral ownership + periodic sampling); if a second
+  consumer of these buses appears (Phase 5's `/api/now` reading live rather than from the ring),
+  ownership should move out to its own `sensors` module rather than growing `sampler.c` further.
+- **Verified**: `pio test -e native` 31/31 pass; `pio run -e esp32-s3-devkitm-1` SUCCESS, zero
+  warnings, RAM 29.1%, flash 27.6%. Post-fix grep confirms exactly one call site each for
+  `i2c_new_master_bus`, `gpio_config`, `bh1750_init`, `ds18b20_probe_init` — all in `sampler.c`.
+  **Not yet bench-verified**: D1's fix is the one with observable behavior change, so the
+  confirmation is watching two consecutive sampler cycles log plausible lux on real hardware.
+- **Affected Components**: `src/main.c`, `src/sampler.c`, `include/sampler.h`,
+  `lib/reading_store_core/include/reading_store_core.h` (doc-only). D5 and D6 remain open in
+  § Known Deviations.
 
 ### 2026-08-20 - Espressif Best-Practice Audit of This File (docs only, no code change)
 - **What Changed**: Audited the Guiding Principles and patterns in this file against the ESP-IDF

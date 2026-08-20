@@ -1,66 +1,43 @@
 /**
- * app_main — Phase 2 boot-time one-shot sensor read.
+ * app_main — boot wiring: initialize peripherals once, take one reading of
+ * each sensor for the bench, then hand off to the continuous sampler and the
+ * Wi-Fi layer and return.
  *
- * Reads each of the three sensors exactly once at boot and prints the results
- * over serial, then returns. This is the hardware exit criterion Phase 2's own
- * roadmap entry names ("all three sensors read on hardware via a one-shot read
- * at boot"), and it is deliberately the *whole* of the device wiring for now:
- * the 30-second sampler task, the ring store, and the mutex discipline all land
- * in Phase 3, and `app_main()` only ever wires and returns.
+ * `app_main()` creates nothing itself. Every sensor peripheral (the I2C
+ * master bus, the 1-Wire RMT bus, the level-switch GPIO configuration) is
+ * owned by `sampler.c` and stood up exactly once by
+ * `sampler_sensors_init()`; the boot read below then goes through the same
+ * `sensor_hub_*_read()` seams the sampler task uses. See
+ * include/sampler.h for the ownership contract and
+ * systemPatterns.md § Guiding Principles → One Owner Per Peripheral.
  *
- * Beyond proving the sensors on the bench, this file is what puts the Phase 2
- * driver modules into the firmware image at all. Until something in `src/`
- * referenced them, `lib/bh1750`, `lib/ds18b20_probe`, `lib/device_status` and
- * `lib/level_switches` were archived and then dropped by the linker — and
- * `level_switches` was never cross-compiled for the target at all, since only
- * the host `[env:native]` build touched it. Every module the phase added is
- * therefore called from here on purpose.
+ * This replaced an earlier arrangement where the boot read stood up its own
+ * I2C and 1-Wire buses in parallel with the sampler's. That was not a
+ * harmless duplication: ESP-IDF's acquire calls are not idempotent, so the
+ * sampler's `i2c_new_master_bus()` got `ESP_ERR_INVALID_STATE` and the
+ * BH1750 stayed un-ready for the entire life of every boot (the lux series
+ * was all invalid bits), while the duplicate 1-Wire acquire quietly orphaned
+ * an RMT TX+RX channel pair out of the ESP32-S3's four.
  *
- * Pins and switch polarity come from Kconfig (menu "Hydroponic Monitor"), never
- * from literals — float-switch polarity in particular cannot be assumed and is
- * a bench-determined value.
+ * Pins and switch polarity come from Kconfig (menu "Hydroponic Monitor"),
+ * never from literals — float-switch polarity in particular cannot be
+ * assumed and is a bench-determined value.
  */
 #include <inttypes.h>
 #include <stdbool.h>
 
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-
-#include "driver/gpio.h"
-#include "driver/i2c_master.h"
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_system.h"
 
-#include "bh1750.h"
 #include "device_status.h"
-#include "ds18b20_probe.h"
 #include "level_switches.h"
 #include "reading_store.h"
 #include "sampler.h"
+#include "sensor_hub.h"
 #include "wifi_conn.h"
 
 static const char *TAG = "main";
-
-/* Spacing between the debounce samples taken during the boot read. The state
- * machine needs LEVEL_SWITCHES_DEBOUNCE_N consecutive agreeing samples before
- * it commits anything, so a single read would only ever report UNKNOWN. Short
- * enough that boot is not visibly delayed; long enough that a chattering float
- * is not sampled three times inside one contact bounce. */
-#define BOOT_LEVEL_SAMPLE_INTERVAL_MS 50
-
-/* Kconfig bools are defined-or-undefined rather than 1/0, so normalize them to
- * real booleans before handing them to level_switches_init(). */
-#ifdef CONFIG_HYDRO_LEVEL_INVERT_HIGH
-#define HYDRO_LEVEL_INVERT_HIGH true
-#else
-#define HYDRO_LEVEL_INVERT_HIGH false
-#endif
-#ifdef CONFIG_HYDRO_LEVEL_INVERT_LOW
-#define HYDRO_LEVEL_INVERT_LOW true
-#else
-#define HYDRO_LEVEL_INVERT_LOW false
-#endif
 
 static const char *level_state_name(level_switch_state_t state) {
     switch (state) {
@@ -78,134 +55,47 @@ static const char *level_state_name(level_switch_state_t state) {
     }
 }
 
-/* Creates the shared I2C master bus. Owned here (not by the BH1750 driver) so
- * later phases can hang additional I2C peripherals off the same bus. */
-static esp_err_t i2c_bus_create(i2c_master_bus_handle_t *bus_out) {
-    i2c_master_bus_config_t bus_config = {
-        .i2c_port = I2C_NUM_0,
-        .sda_io_num = CONFIG_HYDRO_I2C_SDA_GPIO,
-        .scl_io_num = CONFIG_HYDRO_I2C_SCL_GPIO,
-        .clk_source = I2C_CLK_SRC_DEFAULT,
-        .glitch_ignore_cnt = 7,
-        .flags.enable_internal_pullup = true,
-    };
-    return i2c_new_master_bus(&bus_config, bus_out);
-}
-
-/* Both float switches: input, internal pull-up, no interrupts. The switch's
- * other leg is grounded, so a closed contact reads LOW. */
-static esp_err_t level_gpio_configure(void) {
-    gpio_config_t io_config = {
-        .pin_bit_mask = (1ULL << CONFIG_HYDRO_LEVEL_HIGH_GPIO) |
-                        (1ULL << CONFIG_HYDRO_LEVEL_LOW_GPIO),
-        .mode = GPIO_MODE_INPUT,
-        .pull_up_en = GPIO_PULLUP_ENABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE,
-    };
-    return gpio_config(&io_config);
-}
-
-/* Reads ambient light once. Leaves *lux_out untouched on failure — a failed
- * read is never a 0.0 reading. */
-static esp_err_t read_light_once(float *lux_out) {
-    i2c_master_bus_handle_t bus_handle = NULL;
-    esp_err_t err = i2c_bus_create(&bus_handle);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "I2C bus create failed on SDA %d / SCL %d: %s",
-                 CONFIG_HYDRO_I2C_SDA_GPIO, CONFIG_HYDRO_I2C_SCL_GPIO, esp_err_to_name(err));
-        return err;
-    }
-
-    bh1750_t light_sensor;
-    err = bh1750_init(&light_sensor, bus_handle);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "BH1750 init failed: %s", esp_err_to_name(err));
-        return err;
-    }
-
-    err = bh1750_read_lux(&light_sensor, lux_out);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "BH1750 read failed: %s", esp_err_to_name(err));
-    }
-    return err;
-}
-
-/* Reads water temperature once. Leaves *temp_c_out untouched on failure. */
-static esp_err_t read_temp_once(float *temp_c_out) {
-    ds18b20_probe_t probe;
-    esp_err_t err = ds18b20_probe_init(&probe, CONFIG_HYDRO_DS18B20_GPIO);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "DS18B20 init failed on GPIO %d: %s", CONFIG_HYDRO_DS18B20_GPIO,
-                 esp_err_to_name(err));
-        return err;
-    }
-
-    err = ds18b20_probe_read_temp_c(&probe, temp_c_out);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "DS18B20 read failed: %s", esp_err_to_name(err));
-    }
-    return err;
-}
-
-/* Samples both float switches LEVEL_SWITCHES_DEBOUNCE_N times so the state
- * machine can commit out of UNKNOWN, and reports the committed band. */
-static esp_err_t read_level_once(level_switch_state_t *state_out) {
-    esp_err_t err = level_gpio_configure();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "level GPIO config failed (high %d, low %d): %s",
-                 CONFIG_HYDRO_LEVEL_HIGH_GPIO, CONFIG_HYDRO_LEVEL_LOW_GPIO,
-                 esp_err_to_name(err));
-        return err;
-    }
-
-    level_switches_t level;
-    level_switches_init(&level, HYDRO_LEVEL_INVERT_HIGH, HYDRO_LEVEL_INVERT_LOW);
-
-    level_switch_state_t state = LEVEL_SWITCH_STATE_UNKNOWN;
-    for (int i = 0; i < LEVEL_SWITCHES_DEBOUNCE_N; i++) {
-        bool high_raw = gpio_get_level(CONFIG_HYDRO_LEVEL_HIGH_GPIO) != 0;
-        bool low_raw = gpio_get_level(CONFIG_HYDRO_LEVEL_LOW_GPIO) != 0;
-        state = level_switches_update(&level, high_raw, low_raw);
-        ESP_LOGD(TAG, "level sample %d: high_raw=%d low_raw=%d -> %s", i + 1, (int)high_raw,
-                 (int)low_raw, level_state_name(state));
-        vTaskDelay(pdMS_TO_TICKS(BOOT_LEVEL_SAMPLE_INTERVAL_MS));
-    }
-
-    *state_out = state;
-    return ESP_OK;
-}
-
 void app_main(void) {
-    ESP_LOGI(TAG, "Hydroponic Monitor boot — Phase 2 one-shot sensor read");
+    ESP_LOGI(TAG, "Hydroponic Monitor boot");
 
     /* DRAM baseline for the Phase 5 re-check, an outstanding item carried over
      * from Phase 1 (which could not log it: app_main() was still empty). */
     ESP_LOGI(TAG, "free heap at boot: %" PRIu32 " bytes", esp_get_free_heap_size());
 
-    bool sensor_fault = false;
+    /* Single peripheral-acquisition point for the whole firmware. A degraded
+     * return is not fatal: each driver is attempted independently, and any
+     * that failed leaves its read seam returning ESP_FAIL, which feeds
+     * sensor_hub's normal offline escalation. Sampling still runs on
+     * whichever sensors came up. */
+    bool sensor_fault = (sampler_sensors_init() != ESP_OK);
 
+    /* One-shot boot read, through the same seams the sampler uses. Failed
+     * reads leave their output untouched and are never reported as 0.0. */
     float lux = 0.0f;
-    if (read_light_once(&lux) == ESP_OK) {
+    if (sensor_hub_light_read(&lux) == ESP_OK) {
         ESP_LOGI(TAG, "ambient light: %.1f lux", lux);
     } else {
+        ESP_LOGW(TAG, "ambient light: read failed");
         sensor_fault = true;
     }
 
     float temp_c = 0.0f;
-    if (read_temp_once(&temp_c) == ESP_OK) {
+    if (sensor_hub_temp_read(&temp_c) == ESP_OK) {
         ESP_LOGI(TAG, "water temperature: %.2f C", temp_c);
     } else {
+        ESP_LOGW(TAG, "water temperature: read failed");
         sensor_fault = true;
     }
 
+    /* sensor_hub_level_read() takes LEVEL_SWITCHES_DEBOUNCE_N spaced samples
+     * internally, so the state machine can commit out of UNKNOWN — a single
+     * raw sample would only ever report UNKNOWN. */
     level_switch_state_t level_state = LEVEL_SWITCH_STATE_UNKNOWN;
-    if (read_level_once(&level_state) == ESP_OK) {
-        ESP_LOGI(TAG, "water level: %s (high GPIO %d, low GPIO %d, invert %d/%d)",
-                 level_state_name(level_state), CONFIG_HYDRO_LEVEL_HIGH_GPIO,
-                 CONFIG_HYDRO_LEVEL_LOW_GPIO, (int)HYDRO_LEVEL_INVERT_HIGH,
-                 (int)HYDRO_LEVEL_INVERT_LOW);
+    if (sensor_hub_level_read(&level_state) == ESP_OK) {
+        ESP_LOGI(TAG, "water level: %s (high GPIO %d, low GPIO %d)", level_state_name(level_state),
+                 CONFIG_HYDRO_LEVEL_HIGH_GPIO, CONFIG_HYDRO_LEVEL_LOW_GPIO);
     } else {
+        ESP_LOGW(TAG, "water level: read failed");
         sensor_fault = true;
     }
 
@@ -221,14 +111,23 @@ void app_main(void) {
 
     ESP_LOGI(TAG, "boot read complete");
 
-    /* Phase 3: start the continuous 30 s sampler + the ring store it feeds.
+    /* Phase 3: start the continuous sampler + the ring store it feeds.
      * reading_store_init() must run before sampler_start(), since the first
      * sample cycle can complete almost immediately and a push before init
      * would be silently dropped (see reading_store.c). app_main() stays
      * thin — all task/driver wiring lives in sampler.c. */
     reading_store_init();
-    sampler_start();
-    ESP_LOGI(TAG, "sampler started (interval: %d s)", CONFIG_HYDRO_SAMPLE_INTERVAL_SEC);
+    esp_err_t sampler_err = sampler_start();
+    if (sampler_err == ESP_OK) {
+        ESP_LOGI(TAG, "sampler started (interval: %d s)", CONFIG_HYDRO_SAMPLE_INTERVAL_SEC);
+    } else {
+        /* Do not claim the sampler started when it did not — with no task
+         * there is no history at all, which is a louder failure than any
+         * single sensor going offline. */
+        ESP_LOGE(TAG, "sampler FAILED to start (%s) — no readings will be recorded",
+                 esp_err_to_name(sampler_err));
+        status_set(DEVICE_STATUS_SENSOR_FAULT);
+    }
 
     /* Phase 4: station-mode Wi-Fi + mDNS. Deliberately independent of the
      * sampler above — connectivity is the delivery channel, not the

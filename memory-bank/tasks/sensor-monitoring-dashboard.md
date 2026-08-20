@@ -711,8 +711,57 @@ Phase 6 — web UI:
 
 **Build Status**: IDLE
 **Current Phase**: BUILD (Phase 5 next)
-**Last Completed**: Phase 4 (connectivity) — committed to feature/sensor-monitoring-dashboard
-**Can Resume**: NO — Phase 4 fully committed; next /bmb:build starts Phase 5 fresh
+**Last Completed**: D1–D4 best-practice fixes (post-Phase-4) — committed to feature/sensor-monitoring-dashboard
+**Can Resume**: NO — Phase 4 + the D1–D4 fixes are fully committed; next /bmb:build starts Phase 5 fresh
+
+### Espressif Best-Practice Fixes D1–D4 (2026-08-20, post-Phase-4)
+
+Fixed on this feature branch rather than as a separate `/bmb:task` Level 1 branch: the defects
+exist only in unmerged Phase 1–4 code (`origin/main` is still the `void app_main() {}` scaffold),
+so a `task/<slug>` branch cut off `origin/main` per the normal Level 1 routing would have
+contained none of the affected files. They ship with the feature in one PR.
+
+Source: `systemPatterns.md` § Known Deviations, recorded in `169b856`. D1–D4 are now closed and
+removed from that table; **D5 (Kconfig GPIO ranges) and D6 (coredump partition) remain open**, as
+do the SNTP/`uptime_sec` and Wi-Fi-credentials-in-NVS items in § Espressif Platform Conventions.
+
+- **D1 — I2C port 0 acquired twice (the one with user-visible impact).** `app_main()`'s boot read
+  stood up its own bus on `I2C_NUM_0` and never released it, so the sampler's
+  `i2c_new_master_bus()` returned `ESP_ERR_INVALID_STATE` and `s_light_ready` stayed false for the
+  life of every boot — the BH1750 went offline after 5 cycles and the lux series was entirely
+  invalid bits. Fixed by single ownership: `sampler.c` now acquires every sensor peripheral
+  exactly once in the new `sampler_sensors_init()`, and `app_main()` creates nothing — its boot
+  read goes through the same `sensor_hub_*_read()` seams the sampler task uses. `main.c` lost its
+  `i2c_bus_create()`/`level_gpio_configure()` helpers, its three `read_*_once()` functions, and
+  its `driver/i2c_master.h`/`driver/gpio.h`/`bh1750.h`/`ds18b20_probe.h` includes as a result.
+  The stale "open item for Phase 3 hardware verification" comment is gone — it was answerable
+  from the IDF source without a board.
+- **D2 — 1-Wire bus created twice on the same GPIO**, orphaning an RMT TX+RX pair out of the
+  ESP32-S3's four. Fixed by the same single-ownership change; `ds18b20_probe_init()` now has
+  exactly one call site.
+- **D3 — `vTaskDelay` for a fixed-rate loop.** Replaced with `xTaskDelayUntil()`, which holds the
+  period constant regardless of read duration. Two knock-ons closed: the ring's documented
+  "2,880 entries = 24 h at 30 s" is now actually true (it was ~24.9 h), and
+  `reading_store_core_downsample()`'s even-spacing precondition — it strides by **index**, which
+  is only even in **time** at a constant period — is now stated explicitly in
+  `reading_store_core.h` and names the sampler as the responsible writer. An overrun cycle logs a
+  warning rather than drifting silently.
+- **D4 — unchecked returns.** `sampler_start()` returns `esp_err_t` and checks
+  `xTaskCreatePinnedToCore` against `pdPASS`; `app_main()` surfaces a failure as
+  `DEVICE_STATUS_SENSOR_FAULT` instead of logging "sampler started" over a task that does not
+  exist. Both `esp_task_wdt_add`/`_delete` are checked (subscribe failure is non-fatal and warns;
+  unsubscribe failure is `ESP_LOGE`, since it would trip the watchdog every subsequent cycle).
+  `sampler_sensors_init()` also guards against a second call.
+
+**Verified**: `pio test -e native` 31/31 pass; `pio run -e esp32-s3-devkitm-1` SUCCESS with zero
+warnings (RAM 29.1%, flash 27.6%). Post-fix grep confirms exactly one call site each for
+`i2c_new_master_bus`, `gpio_config`, `bh1750_init` and `ds18b20_probe_init`, all in `sampler.c`.
+
+**Still needs a board** (adds to the Phase 2/3 bench list below): D1's fix is the one that changes
+observable behavior — after flashing, the BH1750 should report real lux **from the sampler task**
+on the 30 s cadence, not just once at boot. Watching two consecutive sampler cycles log a
+plausible lux value is the confirmation that D1 is actually dead. Also worth timing one cycle
+against the 5 s TWDT budget while the board is attached.
 
 **Outstanding manual hardware-verification items from Phase 1** (carried forward —
 this environment still has no board attached):
