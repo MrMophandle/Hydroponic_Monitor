@@ -36,6 +36,8 @@
 #include "device_status.h"
 #include "ds18b20_probe.h"
 #include "level_switches.h"
+#include "reading_store.h"
+#include "sampler.h"
 
 static const char *TAG = "main";
 
@@ -216,5 +218,14 @@ void app_main(void) {
         status_set(DEVICE_STATUS_OK);
     }
 
-    ESP_LOGI(TAG, "boot read complete; the 30 s sampler task lands in Phase 3");
+    ESP_LOGI(TAG, "boot read complete");
+
+    /* Phase 3: start the continuous 30 s sampler + the ring store it feeds.
+     * reading_store_init() must run before sampler_start(), since the first
+     * sample cycle can complete almost immediately and a push before init
+     * would be silently dropped (see reading_store.c). app_main() stays
+     * thin — all task/driver wiring lives in sampler.c. */
+    reading_store_init();
+    sampler_start();
+    ESP_LOGI(TAG, "sampler started (interval: %d s)", CONFIG_HYDRO_SAMPLE_INTERVAL_SEC);
 }

@@ -621,11 +621,9 @@ Phase 1 — foundation and test harness:
 - [x] `lib/reading_store_core/src/reading_store_core.c` — ring buffer + downsampling into a
       caller-supplied snapshot buffer. **No FreeRTOS include, no lock** — this is the
       host-testable half.
-- [ ] `lib/reading_store/include/reading_store.h` — locked store interface
-      (**deferred** — no concurrent writer exists yet; the sampler task lands in Phase 3,
-      so the locking wrapper is built there or later, not in Phase 1)
-- [ ] `lib/reading_store/src/reading_store.c` — thin device-only mutex wrapper delegating to
-      `reading_store_core`; holds no buffer arithmetic of its own (**deferred**, see above)
+- [x] `lib/reading_store/include/reading_store.h` — locked store interface (built in Phase 3)
+- [x] `lib/reading_store/src/reading_store.c` — thin device-only mutex wrapper delegating to
+      `reading_store_core`; holds no buffer arithmetic of its own (built in Phase 3)
 - [x] `test/test_reading_store/test_reading_store.c` — exercises `reading_store_core`
 - [x] `include/wifi_secrets.h.example` — committed template
 - [x] `.gitignore` — **extend**: ignore `include/wifi_secrets.h`; ignore `.DS_Store`; untrack
@@ -663,10 +661,10 @@ Phase 2 — sensor drivers:
       Full subsystem wiring (sampler, Wi-Fi, HTTP) still belongs to its later phases.
 
 Phase 3 — sampler and store integration:
-- [ ] `lib/sensor_hub/include/sensor_hub.h`, `lib/sensor_hub/src/sensor_hub.c`
-- [ ] `test/native/stubs/bh1750_stub.c`, `ds18b20_probe_stub.c`, `level_switches_stub.c`
-- [ ] `test/test_sensor_hub/test_sensor_hub.c`
-- [ ] `include/sampler.h`, `src/sampler.c` — sampler task, mutex discipline, TWDT
+- [x] `lib/sensor_hub/include/sensor_hub.h`, `lib/sensor_hub/src/sensor_hub.c`
+- [x] `test/native/stubs/bh1750_stub.c`, `ds18b20_probe_stub.c`, `level_switches_stub.c`
+- [x] `test/test_sensor_hub/test_sensor_hub.c`
+- [x] `include/sampler.h`, `src/sampler.c` — sampler task, mutex discipline, TWDT
       subscribe/unsubscribe bracketing the read window (never across the 30 s sleep)
 
 Phase 4 — connectivity:
@@ -691,8 +689,10 @@ Phase 6 — web UI:
       `[env:native]`); device build clean. The one-shot boot-time serial read **is wired** in
       `src/main.c` (initially deferred, then restored — see the Phase 2 remediation note in
       Execution State); on-hardware confirmation of the printed values remains outstanding
-- [ ] Phase 3: Sampler & store — 30-second sampling into the ring, failure escalation,
-      watchdog subscription **scoped to the read window only**
+- [x] Phase 3: Sampler & store — 30-second sampling into the ring, per-sensor failure
+      escalation (offline at 5 consecutive failures), watchdog subscription **scoped to the read
+      window only**. 27/27 native tests (6 new for sensor_hub failure logic). Device: 21.9% RAM,
+      8.7% flash, 0 warnings, 11 symbols linked
 - [ ] Phase 4: Connectivity — Wi-Fi station with backoff reconnect, mDNS hostname, and the
       serial-logged IP fallback
 - [ ] Phase 5: HTTP API — `/api/now` and `/api/history`, downsampled under the lock into a
@@ -708,9 +708,9 @@ Phase 6 — web UI:
 ## Execution State
 
 **Build Status**: IDLE
-**Current Phase**: BUILD (Phase 3 next)
-**Last Completed**: Phase 2 (sensor drivers) — committed to feature/sensor-monitoring-dashboard
-**Can Resume**: NO — Phase 2 fully committed; next /bmb:build starts Phase 3 fresh
+**Current Phase**: BUILD (Phase 4 next)
+**Last Completed**: Phase 3 (sampler & store) — committed to feature/sensor-monitoring-dashboard
+**Can Resume**: NO — Phase 3 fully committed; next /bmb:build starts Phase 4 fresh
 
 **Outstanding manual hardware-verification items from Phase 1** (carried forward —
 this environment still has no board attached):
@@ -894,6 +894,71 @@ populated.
 - `techContext.md`: new "Managed IDF Components (Phase 2+)" section documenting
   `espressif/onewire_bus`/`espressif/ds18b20` and the version pin rationale; Phase 2 entry
   added to Recent Technology Changes; Status banner updated with build metrics and test count
+
+### Phase 3 — Sampler & Store (2026-08-19)
+
+**Step 3 — TDD Implementation**
+- Implemented `lib/sensor_hub/` orchestrating one complete sample cycle across all three drivers,
+  with per-sensor consecutive-failure counter and offline escalation at 5 failures. Failed reads
+  marked invalid (never as 0.0).
+- Implemented `lib/reading_store/` thin FreeRTOS-mutex wrapper (writer blocks indefinitely,
+  reader supports 100ms timeout). Completed the Pure-Logic/Device-Only Split pattern: core
+  (Phase 1) + wrapper (Phase 3).
+- Implemented `src/sampler.c` FreeRTOS task running every 30 seconds (configurable via
+  `CONFIG_HYDRO_SAMPLE_INTERVAL_SEC`, range 5–3600, default 30). Subscribes to IDF TWDT
+  **scoped to the read window only** — immediately before the three reads, immediately after
+  (never across the sleep). Resolves H1 from plan critique.
+- Implemented `test/native/stubs/` (bh1750_stub.c, ds18b20_probe_stub.c, level_switches_stub.c)
+  for link-time stub substitution in native tests
+- Implemented `test/test_sensor_hub/` (6 new tests): partial failure, total failure, counter
+  increment/reset, offline at 5th failure, offline clears on success
+- `src/Kconfig.projbuild`: added "Sampler" submenu with `CONFIG_HYDRO_SAMPLE_INTERVAL_SEC`
+- `src/main.c`: extended to call `reading_store_init()` then `sampler_start()` after Phase 1/2
+  boot read
+- `lib/reading_store_core/include/reading_store_core.h`: one-line fix — guarded `esp_shim.h`
+  include behind `#ifndef ESP_PLATFORM` so header compiles cleanly in device build
+- RED CONFIRMED (6 failing) → GREEN (6/6, 27/27 full native suite)
+
+**Step 6 — Batch Testing**
+- `pio test -e native`: 27/27 PASS (11 reading_store + 10 level_switches + 6 sensor_hub)
+- `pio run -e esp32-s3-devkitm-1`: SUCCESS; 21.9% RAM (71,784/327,680 B), 8.7% flash
+  (273,268/3,145,728 B); 0 compiler warnings
+- `pio check -e esp32-s3-devkitm-1`: PASS; 5 known/expected low-severity `unusedFunction`
+  false positives (link-time stub seam artifact — cppcheck single-TU limitation); 0 new findings
+- Symbol linkage anti-regression check: 11 sensor_hub/sampler/reading_store symbols confirmed
+  present in `firmware.elf` (vs. Phase 2 linking defect)
+
+**Step 7 — Integration Verification**
+- All three gates (native tests, device build, static analysis) PASS — verdict PASS, no
+  phase-relevant failures
+- Known open risk (accepted, not a defect): `src/main.c`'s Phase 1/2 one-shot boot read and
+  `sampler.c`'s continuous init both independently create an I2C bus on I2C_NUM_0 and configure
+  the same level-switch GPIOs — confirmed real by code review (no `i2c_del_master_bus()` call
+  exists), documented inline in `sampler.c`, flagged as bench-verification item
+
+**Step 8 — Code Review**
+- Code review APPROVED, 0 blocking issues
+- Known open risk noted and accepted (I2C/GPIO double-init, bench verification required)
+- Watchdog-scoped-to-read-window pattern (R1 refinement, H1 applied) verified correctly
+  implemented
+- Failure escalation logic and counter reset verified sound
+
+**Step 9 — Documentation**
+- Inline comments: added to sampler.c explaining watchdog scoping and I2C/GPIO double-init risk
+- `systemPatterns.md`: Status banner updated to show Phase 3 complete; architecture diagram
+  updated showing sensor_hub and reading_store now BUILT (Phase 3); Pure-Logic/Device-Only Split
+  pattern updated to show reading_store BUILT; Phase 3 entry added to Recent Architecture Changes
+  covering sampler task, reading_store wrapper, failure escalation, and watchdog scoping pattern
+- `techContext.md`: Status banner updated with 27-test count and RAM/flash metrics; Phase 3
+  entry added to Recent Technology Changes documenting Kconfig option, `lib_extra_dirs`
+  platformio.ini addition (stub library discovery), and `test_filter` extension for test_sensor_hub
+
+**Outstanding manual hardware-verification items from Phase 3** (carried forward — no board
+attached in this environment):
+- Ring buffer fills correctly across several hours confirmed by serial dump
+- I2C/GPIO double-init resolution: confirm on real hardware whether both init sequences complete
+  without conflicts, or whether one needs removal/sequencing. Currently flagged as bench-verify
+  before Phase 3 can be called fully closed per the Test Strategy.
 
 ---
 

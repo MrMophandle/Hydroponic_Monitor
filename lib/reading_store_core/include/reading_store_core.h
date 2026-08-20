@@ -5,7 +5,7 @@
  * head/count bookkeeping, wrap-and-overwrite, and downsampling into a
  * caller-supplied output buffer. It takes NO lock and includes NO FreeRTOS
  * header — concurrency control is a separate, device-only concern owned by
- * the (not-yet-built) `reading_store` wrapper in a later phase. This split
+ * the `reading_store` wrapper (`lib/reading_store/`, Phase 3). This split
  * is what lets the buffer arithmetic compile and run in the host-only
  * [env:native] PlatformIO environment.
  *
@@ -16,7 +16,20 @@
 
 #include <stdint.h>
 
+/* This header itself uses no esp_err_t/ESP_LOG* — it is pure buffer
+ * arithmetic — but it unconditionally pulled in test/native/esp_shim.h
+ * historically, which only exists on the [env:native] include path
+ * (`-I test/native`). Phase 3 is the first phase that forces this header to
+ * compile under the real ESP-IDF device build too (via `reading_store`, the
+ * device-only locking wrapper that delegates to this module), where no file
+ * named "esp_shim.h" exists on the include path at all. Since nothing here
+ * actually needs the shim's contents, the fix is simply to stop including it
+ * under a real ESP-IDF build (`ESP_PLATFORM` is defined by the ESP-IDF build
+ * system) and keep including it under the host-only environment, preserving
+ * existing native-test behavior exactly. */
+#ifndef ESP_PLATFORM
 #include "esp_shim.h"
+#endif
 
 #ifdef __cplusplus
 extern "C" {

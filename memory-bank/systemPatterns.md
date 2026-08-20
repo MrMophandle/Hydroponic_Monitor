@@ -2,11 +2,13 @@
 
 This file documents the architectural patterns, design patterns, and system structure used in this project. It helps developers understand the system's organization and maintain consistency when extending functionality.
 
-> **Status (2026-08-19)**: Phase 2 of sensor-monitoring-dashboard landed. `lib/reading_store_core/`
-> (the pure ring buffer), four sensor drivers (`bh1750`, `ds18b20_probe`, `level_switches`),
-> and the `device_status` log-only seam are now **built and tested**. The `reading_store`
-> locking wrapper and `sensor_hub` (Phase 3+) remain **planned, not yet built**. Do not treat
-> this file as evidence those remaining files exist — check `lib/`/`src/` directly.
+> **Status (2026-08-19)**: Phase 3 of sensor-monitoring-dashboard landed. `lib/sensor_hub/`
+> (orchestration with per-sensor failure counters and offline escalation), `lib/reading_store/`
+> (FreeRTOS-mutex wrapper), and `src/sampler.c` (30-second continuous sampling task with
+> watchdog scoped to the read window only) are now **built and tested**. Phases 1–3 complete
+> (27/27 native tests, 21.9% RAM, 8.7% flash). Phases 4–6 (`wifi_conn`, `http_api`, web UI)
+> remain **planned, not yet built**. Do not treat this file as evidence those remaining files
+> exist — check `lib/`/`src/` directly.
 
 ## Guiding Principles
 
@@ -30,9 +32,8 @@ This file documents the architectural patterns, design patterns, and system stru
 
 ### High-Level Architecture
 ```
-Target shape (Sensor Monitoring, Hydroponic Reservoir) — Phase 1 + Phase 2 components
-are BUILT. Phase 3+ components (reading_store wrapper, sensor_hub, app/wifi/http layers)
-are planned but not yet built:
+Target shape (Sensor Monitoring, Hydroponic Reservoir) — Phase 1–3 components
+are BUILT. Phase 4–6 components (wifi/http layers) are planned but not yet built:
 
 ┌──────────────────────────────────────────────────────────────┐
 │ Application Layer (src/)                                      │
@@ -51,9 +52,9 @@ are planned but not yet built:
         │ reading_store  │  │ sensor_hub   │  │ Drivers         │
         │ (mutex wrapper)│──│ (sampler     │──│ (lib/)          │
         │ (device-only)  │  │  failure     │  │ bh1750 (I2C)    │
-        │  NOT BUILT     │  │  handling)   │  │ ds18b20 (1-Wire)│
-        │  (planned)     │  │  NOT BUILT   │  │ level_switches  │
-        └────────┬────────┘  │  (planned)   │  │ device_status   │
+        │ ◄─ BUILT       │  │  handling)   │  │ ds18b20 (1-Wire)│
+        │    (Phase 3)   │  │ ◄─ BUILT     │  │ level_switches  │
+        └────────┬────────┘  │    (Phase 3) │  │ device_status   │
                  │           └──────────────┘  │ ◄─ BUILT        │
                  │                              │    (Phase 2)    │
                  │                              └─────────────────┘
@@ -102,11 +103,10 @@ pure half. The pure half lives in `lib/<name>_core/` and is host-compilable; the
   with static allocation, no locks, no FreeRTOS headers. All 2,880 × 20-byte entries statically
   declared. (File is short — read it directly for line-level detail rather than trusting a
   pinned line range here, since it will shift as the module grows.)
-- `lib/reading_store/` (`reading_store.h/c`) — **NOT YET BUILT** (deferred to Phase 3+, once
-  the sampler task is the concurrent writer that actually needs a lock). When built, it is
-  intended to be a thin device-only wrapper owning a `SemaphoreHandle_t`, delegating every
-  operation to `reading_store_core` with zero arithmetic of its own — that is the design intent
-  this pattern documents, not yet a fact about the codebase.
+- `lib/reading_store/` (`reading_store.h/c`) — **BUILT, Phase 3**: a thin device-only wrapper
+  owning a `SemaphoreHandle_t`, delegating every operation to `reading_store_core` with zero
+  arithmetic of its own. The writer is the sampler task (Phase 3); the reader API supports a
+  100ms timeout (reader not yet implemented — lands in Phase 5).
 - `test/test_reading_store/test_reading_store.c` — **BUILT, Phase 1**: exercises
   `reading_store_core` on the host; uses `[env:native]` which links `esp_shim.h` instead of
   FreeRTOS.
@@ -236,6 +236,40 @@ To populate this section, run `/bmb:c4`. The command builds a complete bottom-up
 <!-- AUTO-MANAGED: c4-architecture-end -->
 
 ## Recent Architecture Changes
+
+### 2026-08-19 - Phase 3: Sampler Task & Store Locking Wrapper Integrated
+- **What Changed**: 
+  - `lib/sensor_hub/` — orchestration module that runs one complete sample cycle across all three
+    drivers (bh1750, ds18b20_probe, level_switches), with per-sensor consecutive-failure counter.
+    Failure escalation: sensor marked offline after 5 consecutive failures, with counter reset on
+    success. Failed reads stored with validity bit cleared, never as `0.0`.
+  - `lib/reading_store/` — the thin FreeRTOS-mutex wrapper completing the Pure-Logic/Device-Only
+    Split pattern. Writer (sampler task) blocks indefinitely; reader API supports 100ms timeout
+    (reader not yet implemented — lands in Phase 5).
+  - `src/sampler.c` — FreeRTOS task running every 30 seconds (configurable via `CONFIG_HYDRO_SAMPLE_INTERVAL_SEC`).
+    Subscribes to IDF task watchdog (TWDT) **scoped to the read window only** (R1 refinement per
+    creative design), never across the sleep. This resolves H1 from the plan critique: a permanent
+    TWDT subscription on a 30s loop would reboot spuriously; scoping brackets it.
+  - `test/native/stubs/` — link-time stub implementations of the three drivers (bh1750_stub.c,
+    ds18b20_probe_stub.c, level_switches_stub.c) for host testing of `sensor_hub` failure logic
+  - `test/test_sensor_hub/` — 6 new host tests covering partial/total failure, counter
+    increment/reset, offline at 5th failure, offline clear on success
+  - `src/Kconfig.projbuild` — new "Sampler" submenu with `CONFIG_HYDRO_SAMPLE_INTERVAL_SEC`
+    (range 5–3600, default 30)
+  - `src/main.c` — extended to call `reading_store_init()` then `sampler_start()` after the
+    existing Phase 1/2 boot read
+  - `lib/reading_store_core/include/reading_store_core.h` — fixed: guarded `esp_shim.h` include
+    behind `#ifndef ESP_PLATFORM` so the header compiles cleanly in device build
+- **Reason**: The sampler task is the third concurrent actor (per Decision 3, creative design).
+  It reads sensors on a schedule and writes into the store; `sensor_hub` encapsulates the
+  multi-driver orchestration and failure handling so the sampler itself stays thin.
+- **Trade-offs**: TWDT scoping adds complexity (subscribe/unsubscribe per cycle) in exchange for
+  a genuine 5-minute hang detector instead of a 30-second false-alarm generator. Failure
+  escalation (offline at 5 failures) balances responsiveness against transient glitch noise.
+- **Affected Components**: `lib/sensor_hub/`, `lib/reading_store/`, `src/sampler.c`,
+  `src/Kconfig.projbuild`, `test/test_sensor_hub/` (new), `test/native/stubs/` (new).
+  Drivers (bh1750, ds18b20_probe, level_switches, device_status) now have call sites and are
+  integrated into the firmware image.
 
 ### 2026-08-19 - Phase 2: Sensor Drivers Added (bh1750, ds18b20_probe, level_switches, device_status)
 - **What Changed**: Four device-driver modules now implemented and tested:

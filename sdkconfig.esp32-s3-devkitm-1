@@ -557,6 +557,12 @@ CONFIG_HYDRO_LEVEL_LOW_GPIO=6
 # CONFIG_HYDRO_LEVEL_INVERT_HIGH is not set
 # CONFIG_HYDRO_LEVEL_INVERT_LOW is not set
 # end of Water level (2 x float switch)
+
+#
+# Sampler
+#
+CONFIG_HYDRO_SAMPLE_INTERVAL_SEC=30
+# end of Sampler
 # end of Hydroponic Monitor
 
 #

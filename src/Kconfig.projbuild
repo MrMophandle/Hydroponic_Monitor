@@ -75,4 +75,19 @@ menu "Hydroponic Monitor"
 
     endmenu
 
+    menu "Sampler"
+
+        config HYDRO_SAMPLE_INTERVAL_SEC
+            int "Sensor sampling interval (seconds)"
+            range 5 3600
+            default 30
+            help
+                How often the sampler task reads all three sensors and pushes
+                one new entry into the ring buffer. The store's 2,880-entry
+                capacity is sized for a 24-hour history window at the default
+                30 s interval — changing this value changes how much
+                wall-clock history the ring holds before it starts wrapping.
+
+    endmenu
+
 endmenu

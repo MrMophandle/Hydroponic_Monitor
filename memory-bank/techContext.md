@@ -2,14 +2,12 @@
 
 This file documents the technology stack, infrastructure, and tooling used in this project. It serves as a reference for understanding technical decisions and helps maintain consistency across development phases.
 
-> **Status (2026-08-19)**: Phase 2 complete. Sensor drivers (`bh1750`, `ds18b20_probe`,
-> `level_switches`, `device_status`) implemented and tested. Managed IDF components
-> (`espressif/onewire_bus`, `espressif/ds18b20`) declared in `src/idf_component.yml`.
-> Host-testable logic tests expanded to 21 passing (`pio test -e native` covers
-> `test_reading_store` + `test_level_switches`). Device build (`pio run -e esp32-s3-devkitm-1`)
-> compiles clean at 4.0% RAM, 6.6% flash. Drivers are **not yet called from `src/`** — that
-> lands in Phase 6; Phase 2 proves they compile and link correctly against ESP-IDF/FreeRTOS
-> headers.
+> **Status (2026-08-19)**: Phase 3 complete. Sampler task (`src/sampler.c`), sensor orchestration
+> hub (`lib/sensor_hub/`), and store locking wrapper (`lib/reading_store/`) implemented and
+> tested. 27/27 native tests passing (`pio test -e native`): 11 reading_store + 10 level_switches
+> + 6 sensor_hub. Device build (`pio run -e esp32-s3-devkitm-1`): SUCCESS at 21.9% RAM (71,784 B),
+> 8.7% flash (273,268 B); 0 warnings; 11 Phase-3+ symbols linked (anti-regression vs. Phase 2
+> linking defect). Kconfig option `CONFIG_HYDRO_SAMPLE_INTERVAL_SEC` added (5–3600 sec, default 30).
 
 ## Component Structure
 
@@ -228,6 +226,34 @@ After `/bmb:c4` runs, this section will contain pointers to the Container-level 
 <!-- AUTO-MANAGED: c4-references-end -->
 
 ## Recent Technology Changes
+
+### 2026-08-19 - Phase 3: Kconfig option and test library path added
+- **What Changed**:
+  - New `src/Kconfig.projbuild` "Sampler" submenu added with `CONFIG_HYDRO_SAMPLE_INTERVAL_SEC`
+    (range 5–3600, default 30). Sampler task period is now Kconfig-configurable, not hardcoded.
+  - New `platformio.ini` line: `lib_extra_dirs = test/native` in `[env:native]` section.
+    PlatformIO's test runner now auto-discovers stub libraries from `test/native/stubs/`
+    (bh1750_stub.c, ds18b20_probe_stub.c, level_switches_stub.c) for host linking; device build
+    ignores this path and links the real implementations from `lib/`.
+  - Extended `[env:native]` `test_filter`: added `test_sensor_hub` to the list alongside existing
+    `test_reading_store` and `test_level_switches`. All three test suites now run together on the
+    host without a board.
+- **Reason**:
+  - Sampler interval is a tuning parameter — making it Kconfig-configurable rather than a literal
+    allows different deployments to choose responsiveness vs. power trade-offs without code changes.
+  - Stub libraries in `test/native/stubs/` enable host testing of higher-level orchestration
+    (`sensor_hub`, later `reading_json`) without the physical peripherals. Link-time stub
+    substitution (not function pointers) means zero runtime cost in the device build.
+  - `test_sensor_hub` extends test coverage to the failure-handling logic and offline escalation.
+- **Impact**:
+  - `pio menuconfig` now shows "Hydroponic Monitor" → "Sampler" submenu with the new option
+  - `pio test -e native` now runs 27 tests (11 reading_store + 10 level_switches + 6 sensor_hub)
+  - Device builds continue to use real drivers from `lib/` — no build breakage; `lib_extra_dirs`
+    is `[env:native]`-scoped and ignored by the device environment
+- **Migration Notes**: No migration needed; the stub path and test filter are backward-compatible.
+  `test_sensor_hub` is a new test suite and will have zero tests if not present (will not fail
+  the test run). If the stub library is missing, the native test build will fail with linker
+  errors — the error is clear and ties back to the `lib_extra_dirs` addition if you grep for it.
 
 ### 2026-08-19 - Phase 2: Managed IDF components and device-driver libraries added
 - **What Changed**:
