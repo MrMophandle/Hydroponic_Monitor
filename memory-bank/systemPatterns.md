@@ -21,10 +21,12 @@ This file documents the architectural patterns, design patterns, and system stru
 | Principle | Description |
 |-----------|-------------|
 | Hardware Abstraction | Sensor and actuator access goes through a driver interface in `lib/`; application logic never calls IDF peripheral APIs (`i2c_*`, `adc_*`, `gpio_*`) directly. This is what makes logic testable without hardware. |
+| **One Owner Per Peripheral** | Every bus/port/channel (I2C port, 1-Wire bus, RMT channel, timer) is created **exactly once**, by a single named owner, which passes the handle to consumers. ESP-IDF's driver APIs are paired (`i2c_new_master_bus`/`i2c_del_master_bus`, `i2c_master_bus_add_device`/`i2c_master_bus_rm_device`, `onewire_new_bus_rmt`/`onewire_bus_del`) — a module that creates and never deletes is a leak, and a second create on the same port is an **error**, not a no-op. A driver's `init()` may take a handle; it may not acquire a shared resource for itself. See § Espressif Platform Conventions. |
 | Fail-Safe Defaults | A sensor read failure, network loss, or bad reading must never leave an actuator energized or the device wedged. Every failure path has a defined safe state. |
 | No Blocking in `app_main` | Long-running work lives in FreeRTOS tasks with explicit stack sizes and priorities; `app_main` wires things up and returns or blocks on a supervisory primitive. |
-| Explicit Error Handling | Every IDF call returning `esp_err_t` is checked. Use `ESP_ERROR_CHECK` only where an abort is genuinely the correct response; otherwise handle and log. |
-| Configuration Is Not Hard-Coded | Pin assignments, thresholds, intervals, and credentials come from Kconfig (`menuconfig`) or NVS — not string/number literals scattered through source. Secrets are never committed. |
+| **Periodic Work Uses Absolute Deadlines** | A task that must run at a fixed rate uses `xTaskDelayUntil()`, never `vTaskDelay()` after the work. `vTaskDelay` makes the real period `interval + work duration`, which drifts and — worse — silently breaks any downstream logic that assumes evenly-spaced samples. If a pure module's contract depends on a constant period, that contract is stated in its header and honored by the device-only half. |
+| Explicit Error Handling | Every IDF call returning `esp_err_t` is checked — including the ones whose failure is "unlikely": `esp_task_wdt_add`/`_delete`, `xTaskCreatePinnedToCore` (returns `pdPASS`), `i2c_new_master_bus`. A start/init function that can fail returns `esp_err_t`; it does not return `void` and log success unconditionally. Use `ESP_ERROR_CHECK` only where an abort is genuinely the correct response; otherwise handle and log. |
+| Configuration Is Not Hard-Coded | Pin assignments, thresholds, intervals, and credentials come from Kconfig (`menuconfig`) or NVS — not string/number literals scattered through source. Secrets are never committed. **A Kconfig `range` is the guardrail, not the `help` text**: if a value is invalid or fatal on this SoC, the range must exclude it (or init must validate it), because prose in a `comment` block constrains nothing. |
 | Structured Logging | Use the IDF logging macros (`ESP_LOGI`/`ESP_LOGW`/`ESP_LOGE`) with a per-module `static const char *TAG`. No `printf` for diagnostics. |
 
 ## System Architecture
@@ -117,6 +119,14 @@ pure half. The pure half lives in `lib/<name>_core/` and is host-compilable; the
   explicit verification.
 - **Cost**: Slight verbosity — the wrapper delegates every operation (one line each). Acceptable
   because the wrapper is thin (< 50 SLOC) and the core is stable (ring arithmetic is well-known).
+- **Cost (added 2026-08-20): the split hides cross-half contracts.** The pure half can depend on a
+  property only the device half can supply, and nothing checks it. Live example:
+  `reading_store_core_downsample()` selects "evenly-spaced samples" **by index**, which is only
+  evenly spaced *in time* if the sample period is constant — but `src/sampler.c` uses `vTaskDelay`,
+  so the period varies with how long the reads took (see § Known Deviations → D3). The host tests
+  pass, because the assumption is invisible to them. **Rule**: when a pure module's correctness
+  depends on a timing, ordering, or units property, state it in the pure header as an explicit
+  precondition, and name the device-only module responsible for honoring it.
 
 **When to reuse**: Whenever a module has both pure logic and FreeRTOS coupling:
 - A state machine (pure) with a queue-owned task wrapper (device-only).
@@ -134,6 +144,104 @@ but off-device testing of logic is feasible.
 - **Direction**: [To be defined]
 - **Contract**: [Schema location or documentation]
 
+## Espressif Platform Conventions
+
+<!--
+  Added 2026-08-20 after an audit of this file against the ESP-IDF v5.3.1
+  programming guide (the version pinned by platform = espressif32@6.9.0) and
+  against the IDF sources under ~/.platformio/packages/framework-espidf/.
+  Each rule below is here because the codebase either violated it or had no
+  position on it. Cite the source when amending.
+-->
+
+These are target-specific rules that the Guiding Principles above depend on. They are ESP-IDF
+facts, not project preferences — verify against the pinned IDF (5.3.1) before changing one.
+
+### Peripheral Lifecycle
+
+| Rule | Why (verified) |
+|---|---|
+| An I2C port is acquired once. A second `i2c_new_master_bus()` on the same port returns **`ESP_ERR_INVALID_STATE`** and logs `"I2C bus id(N) has already been acquired"`. | `components/esp_driver_i2c/i2c_common.c:115` in IDF 5.3.1. It is not idempotent and it does not hand back the existing bus. |
+| There is **no `i2c_master_get_bus_handle()` in IDF 5.3.1** — it landed in 5.4. So a module cannot recover a handle it didn't keep. | Grepped the pinned framework tree; absent. The handle must be threaded from the owner, or the pin must move to 5.4+. |
+| Each `onewire_new_bus_rmt()` allocates **1 RX + 1 TX RMT channel**; ESP32-S3 has only **4 of each**. Two buses on one GPIO both succeed — and permanently orphan half the chip's RMT capacity. | `onewire_bus_impl_rmt.c:276,290`; `soc/esp32s3/include/soc/soc_caps.h:266-268`. Silent success is what makes this worse than the I2C case, not better. |
+| Devices are removed before buses are deleted (`i2c_master_bus_rm_device()` → `i2c_del_master_bus()`). | ESP-IDF I2C API reference: resources are released in the reverse of acquisition. |
+
+### Task Watchdog (TWDT)
+
+- **Documented mechanism is subscribe-once → `esp_task_wdt_reset()` → unsubscribe.** Calling
+  `esp_task_wdt_add()`/`esp_task_wdt_delete()` once per loop iteration is not a documented
+  pattern. If the intent is "watch the work, not the sleep," the idiomatic forms are (a) hold the
+  subscription and `esp_task_wdt_reset()` immediately before the sleep, with
+  `CONFIG_ESP_TASK_WDT_TIMEOUT_S` sized above the worst-case work window, or (b) an `esp_timer`
+  one-shot armed around the work as a dedicated hang detector.
+- **Know what the current config actually does.** As of this writing:
+  `CONFIG_ESP_TASK_WDT_TIMEOUT_S=5` (five **seconds**) and `CONFIG_ESP_TASK_WDT_PANIC` is **not
+  set** — so a timeout prints a warning plus a backtrace **and execution continues**. The TWDT is
+  therefore a *detector*, not a recovery mechanism. Any doc or comment claiming it reboots or that
+  it covers minutes is wrong; set `CONFIG_ESP_TASK_WDT_PANIC=y` if reboot-on-hang is the intent.
+- Budget the watched window before trusting the timeout. The current sample cycle is ~1.1 s
+  nominal (180 ms BH1750 conversion + ~750 ms DS18B20 12-bit conversion + 3 × 50 ms debounce) but
+  reaches ~3.3 s when both I2C transactions hit their 1000 ms timeouts — inside 5 s, without much
+  margin.
+
+### Build & Flash Configuration
+
+- **Enable core dump.** Currently `CONFIG_ESP_COREDUMP_ENABLE_TO_NONE=y` with no coredump
+  partition, so an unattended crash leaves no evidence. For a headless always-on device this is
+  the highest-value use of the ~12.9 MB of unallocated flash. Espressif's documented entry:
+  `coredump, data, coredump, , 64K`.
+- **`file(GLOB_RECURSE)` in `src/CMakeLists.txt` is a known sharp edge, not a pattern to copy.**
+  Espressif recommends listing sources explicitly via `SRCS`, because "if a new source file is
+  added and this method is used, then CMake won't know to automatically re-run and this file won't
+  be added to the build." That is the exact failure this project already hit once — the Phase 2
+  modules were silently dropped from the image (see the `lib_deps` comment in `platformio.ini`).
+  The file is PlatformIO-generated; if it stays, treat "did my new file actually get compiled?" as
+  a thing to verify, not assume.
+- **The committed profile is a debug profile.** `CONFIG_COMPILER_OPTIMIZATION_DEBUG=y` (`-Og`) and
+  `CONFIG_COMPILER_OPTIMIZATION_ASSERTION_LEVEL=2` (full assertions). Correct for the bench; for
+  anything shipped, Espressif's size guide recommends `-Os` and `Silent` assertions. Define that
+  second profile deliberately rather than discovering it at deploy time.
+
+### ESP32-S3 GPIO Validity (Hosyond WROOM-1 N16R8)
+
+`SOC_GPIO_VALID_GPIO_MASK` (`soc/esp32s3/include/soc/soc_caps.h:179`) masks out
+`BIT22|BIT23|BIT24|BIT25` — **GPIO 22–25 do not physically exist on the ESP32-S3.** Combined with
+26–32 (SPI flash) and 33–37 (octal PSRAM on the N16R8 part, unusable even with PSRAM disabled in
+software), a bare `range 1 48` in Kconfig admits a large set of pins that cannot work. Constrain
+the `range`, or validate with `GPIO_IS_VALID_GPIO()` at init and fail loudly.
+
+### Time & Credentials
+
+- **`esp_timer_get_time()` is uptime, not a timestamp.** It resets to zero on every reboot, so
+  stored history is unanchored and non-monotonic across restarts. SNTP + `time()` is the
+  documented answer. Decide this before the Phase 5 JSON contract freezes the field.
+- **Wi-Fi credentials belong in NVS, not the image.** Espressif's guidance for anything past a
+  bench demo is NVS (which `esp_wifi` reads by default) or `wifi_prov_mgr`. The current
+  compile-time `include/wifi_secrets.h` is correctly gitignored and guarded by `__has_include`
+  (`src/wifi_conn.c:52-55`), but it bakes the credentials into the binary and satisfies neither
+  branch of the "Kconfig or NVS" principle above. Note `nvs_flash_init()` is already called
+  (`src/wifi_conn.c:169`), so NVS is available today.
+
+## Known Deviations From These Patterns
+
+<!--
+  Confirmed, reproducible gaps between the patterns above and the code as
+  committed. Each was verified against IDF 5.3.1 sources, not inferred. This
+  list is a work queue: delete an entry when the code is fixed, do not delete
+  it because it is inconvenient.
+-->
+
+Recorded 2026-08-20, all still present as of Phase 4 (`cef3419`):
+
+| # | Deviation | Evidence | Impact |
+|---|---|---|---|
+| D1 | **I2C port 0 is acquired twice.** `read_light_once()` acquires it and never releases it; the sampler then tries to acquire it again, gets `ESP_ERR_INVALID_STATE`, and leaves `s_light_ready = false` forever. | `src/main.c:113` + `src/sampler.c:117`; `i2c_common.c:115` | **The BH1750 never produces a reading in the sampler.** It escalates to offline after 5 cycles (~2.5 min) and stays offline for the life of the boot, so the lux series is entirely invalid bits. Violates One Owner Per Peripheral. Fix: create the bus once in `app_main`, pass the handle. `src/sampler.c:107-114` calls this "an open item for Phase 3 hardware verification" — it is not open, it is answerable from the IDF source without a board. |
+| D2 | **1-Wire bus created twice on the same GPIO**, neither deleted. | `src/main.c:136` + `src/sampler.c:129` | Both succeed, permanently orphaning 1 RX + 1 TX of the S3's 4+4 RMT channels and binding two channels to one pin. Will surface later as an unrelated RMT allocation failure. Violates One Owner Per Peripheral. |
+| D3 | **Sampler uses `vTaskDelay` for a fixed-rate loop.** | `src/sampler.c:228` | Real period is ~31.1 s, not 30 s. Two knock-ons: the ring holds ~24.9 h, not the documented 24 h; and `reading_store_core_downsample()` picks samples **by index**, which is only evenly spaced in *time* if the period is constant — so the chart's x-axis is subtly wrong. Violates Periodic Work Uses Absolute Deadlines. |
+| D4 | **Unchecked `esp_err_t` / task-create returns.** `esp_task_wdt_add`/`_delete` and `xTaskCreatePinnedToCore` are all unchecked; `sampler_start()` returns `void`. | `src/sampler.c:208,210,232,234` | A failed task create (plausible once Wi-Fi has taken its DRAM) logs `"sampler started"` and then silently never samples. Violates Explicit Error Handling and Fail-Safe Defaults. |
+| D5 | **Kconfig GPIO ranges admit nonexistent and fatal pins** (`range 1 48` for all four pin options). | `src/Kconfig.projbuild:9,16,27,41,50` | The `comment` block warns in prose; the `range` enforces nothing. Violates Configuration Is Not Hard-Coded. |
+| D6 | **No coredump partition**, `CONFIG_ESP_COREDUMP_ENABLE_TO_NONE=y`. | `partitions.csv`; `sdkconfig.esp32-s3-devkitm-1` | An unattended crash leaves no post-mortem evidence. |
+
 ## Code Organization Patterns
 
 <!--
@@ -149,7 +257,11 @@ but off-device testing of logic is feasible.
   an explicit decision (it changes `idf_component_register` behaviour and linkage; C headers
   consumed from C++ need `extern "C"` guards). Record that decision here if it is made.
 - **Type-checking enforced**: The compiler is the gate — `pio run` must build clean. Treat
-  warnings as defects; consider adding `build_flags = -Wall -Wextra` to `platformio.ini`.
+  warnings as defects. Note this is currently aspirational: `[env:esp32-s3-devkitm-1]` has **no
+  `build_flags` at all**, so "treat warnings as defects" is unenforced. Add
+  `build_flags = -Wall -Wextra` to make the stated gate real. Be aware the compiler cannot catch
+  the defect class that has actually bitten this project — peripheral double-acquisition and
+  unchecked `esp_err_t` returns both compile clean (see § Known Deviations).
 
 ### File Extension by Directory / Role
 
@@ -194,6 +306,16 @@ but off-device testing of logic is feasible.
   build pays zero cost for testability. See `test/native/esp_shim.h` for the ESP-IDF type/macro
   shim that makes pure logic compilable on the host.
 
+  **Cost of this seam (added 2026-08-20)** — previously recorded as an unqualified win, which
+  understated it. `lib/sensor_hub` *declares* `sensor_hub_light_read`/`_temp_read`/`_level_read`
+  but the **application** defines them (`src/sampler.c:147-174`). So a `lib/` module depends on
+  symbols from `src/`, which means: (a) `lib/sensor_hub` cannot link standalone; (b) a missing
+  definition is caught only at final link, the same late-and-opaque failure class the `lib_deps`
+  belt-and-suspenders in `platformio.ini` exists to avoid; and (c) exactly one implementation can
+  exist per binary. The runtime-cost claim is still true. If the seam is reused for another
+  module, prefer `__attribute__((weak))` default stubs inside the `lib/` module — that keeps the
+  zero-indirection property while leaving the module self-contained and linkable on its own.
+
 ### Test Scope Preferences
 - **Emphasis**: Unit-heavy on pure logic (implemented in `lib/<name>_core/`). Ring buffer arithmetic,
   state machines, JSON serialization, and sampling failure handling all carry defect risk and must
@@ -237,7 +359,37 @@ To populate this section, run `/bmb:c4`. The command builds a complete bottom-up
 
 ## Recent Architecture Changes
 
-### 2026-08-20 - Phase 4: Wi-Fi Connectivity Layer Added (Pure-Logic / Device-Only Split Extended)
+### 2026-08-20 - Espressif Best-Practice Audit of This File (docs only, no code change)
+- **What Changed**: Audited the Guiding Principles and patterns in this file against the ESP-IDF
+  v5.3.1 programming guide (the version pinned by `platform = espressif32@6.9.0`) and against the
+  IDF sources in `~/.platformio/packages/framework-espidf/`. Resulting edits:
+  - Added two Guiding Principles — **One Owner Per Peripheral** and **Periodic Work Uses Absolute
+    Deadlines** — and tightened **Explicit Error Handling** (name the specific calls that were
+    going unchecked) and **Configuration Is Not Hard-Coded** (a Kconfig `range` must be the
+    guardrail, not the `help` text).
+  - Added § **Espressif Platform Conventions**: peripheral lifecycle, TWDT, build/flash config,
+    ESP32-S3 GPIO validity, time & credentials. Every rule carries its verification source.
+  - Added § **Known Deviations From These Patterns** (D1–D6): confirmed, reproducible gaps
+    between these patterns and the code as committed, each verified against IDF 5.3.1 rather than
+    inferred. Intended as a work queue for a follow-up task.
+  - **Corrected a false claim** in the Phase 3 entry below: the TWDT scoping was described as
+    buying "a genuine 5-minute hang detector." The timeout is 5 **seconds**
+    (`CONFIG_ESP_TASK_WDT_TIMEOUT_S=5`) and `CONFIG_ESP_TASK_WDT_PANIC` is not set, so it warns
+    and continues rather than rebooting.
+  - Recorded two previously-unstated **costs**: the Pure-Logic/Device-Only Split can hide
+    cross-half contracts (the downsampler's even-spacing assumption vs. `vTaskDelay`), and the
+    link-time stub seam inverts the `lib/` → `src/` dependency direction.
+- **Reason**: The principles were sound and Espressif-idiomatic but governed peripheral *access*
+  while saying nothing about peripheral *lifetime and ownership* — and that gap had already
+  produced two live defects (D1, D2), one of which silently disables a sensor for the life of
+  every boot. A patterns file that reads as satisfied while the code is broken is worse than
+  no patterns file.
+- **Trade-offs**: This file gets longer and more prescriptive, which is a real cost for a
+  progressive-discovery memory bank. Accepted because the added rules are each tied to a concrete
+  defect or an SoC fact rather than to taste. § Known Deviations deliberately carries an
+  expiry: entries are deleted when fixed, so if it stops shrinking, that itself is the signal.
+- **Affected Components**: None — documentation only. No `src/` or `lib/` file was modified;
+  D1–D6 remain open in the code and need a separate build/fix task.
 - **What Changed**:
   - `lib/wifi_backoff/` — pure-logic module computing capped exponential backoff delay sequence
     (1→2→4→8→16→30s, per AC-ERROR-3), with zero FreeRTOS/ESP-IDF dependency. Host-testable,
@@ -287,8 +439,15 @@ To populate this section, run `/bmb:c4`. The command builds a complete bottom-up
   It reads sensors on a schedule and writes into the store; `sensor_hub` encapsulates the
   multi-driver orchestration and failure handling so the sampler itself stays thin.
 - **Trade-offs**: TWDT scoping adds complexity (subscribe/unsubscribe per cycle) in exchange for
-  a genuine 5-minute hang detector instead of a 30-second false-alarm generator. Failure
-  escalation (offline at 5 failures) balances responsiveness against transient glitch noise.
+  a hang detector that does not false-alarm on the sleep. Failure escalation (offline at 5
+  failures) balances responsiveness against transient glitch noise.
+  > **Correction (2026-08-20)**: this entry originally claimed the scoping bought "a genuine
+  > 5-minute hang detector instead of a 30-second false-alarm generator." That was wrong on both
+  > counts. `CONFIG_ESP_TASK_WDT_TIMEOUT_S=5` is five **seconds**, not minutes, and
+  > `CONFIG_ESP_TASK_WDT_PANIC` is **not set** — so a timeout prints a warning and a backtrace and
+  > then keeps running. It never reboots. The scoping is still the right call (a permanent
+  > subscription really would trip on every sleep), but what it buys is a 5-second *detector*, not
+  > recovery. See § Espressif Platform Conventions → Task Watchdog.
 - **Affected Components**: `lib/sensor_hub/`, `lib/reading_store/`, `src/sampler.c`,
   `src/Kconfig.projbuild`, `test/test_sensor_hub/` (new), `test/native/stubs/` (new).
   Drivers (bh1750, ds18b20_probe, level_switches, device_status) now have call sites and are
