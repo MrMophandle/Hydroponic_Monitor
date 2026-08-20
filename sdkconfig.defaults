@@ -16,3 +16,24 @@
 CONFIG_ESPTOOLPY_FLASHSIZE_2MB=n
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+
+# Local time for the deployment site (America/New_York).
+#
+# The Kconfig default in src/Kconfig.projbuild stays "UTC0" — that is the right
+# neutral default for anyone cloning this repo. This line pins the value for
+# *this* deployment.
+#
+# Why it matters: src/time_sync.c passes this to setenv("TZ",...)/tzset() so
+# localtime()-based logic computes LOCAL time. Nothing in v1 calls localtime()
+# — epoch stamping is TZ-independent and the dashboard computes chart labels
+# browser-side — so this is inert today. It stops being inert the moment the
+# deferred pump relay schedules on day/night, which is a local-time concept and
+# whose boundary DST moves twice a year. Left at UTC0, a pump here would run its
+# night schedule 4 or 5 hours off depending on the season.
+#
+# POSIX TZ format: EST5EDT,M3.2.0,M11.1.0
+#   EST5      standard time, 5 h west of UTC
+#   EDT       daylight abbreviation (offset defaults to standard - 1 h)
+#   M3.2.0    DST starts: month 3, 2nd week, Sunday  (02:00 local, the default)
+#   M11.1.0   DST ends:   month 11, 1st week, Sunday (02:00 local, the default)
+CONFIG_HYDRO_SNTP_TZ="EST5EDT,M3.2.0,M11.1.0"

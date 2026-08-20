@@ -6,7 +6,7 @@ This file documents the technology stack, infrastructure, and tooling used in th
 > now built. Web UI layer (`src/web/` dashboard assets + `embed_web_assets.py` build integration)
 > implemented and tested. 54 total host-run tests: 39 native C tests (`pio test -e native`: 
 > 11 reading_store + 10 level_switches + 6 sensor_hub + 4 wifi_backoff + 6 reading_json + 2 
-> reading_store time_valid) + 15 new JS tests (`node --test test/web/` for dashboard-logic.js).
+> reading_store time_valid) + 15 new JS tests (`node --test test/web/*.test.mjs` for dashboard-logic.js).
 > Device build (`pio run -e esp32-s3-devkitm-1`): SUCCESS at 32.6% RAM (106,692 B), 30.4% flash
 > (957,040 B); 0 warnings. Security review PASS (no new user input, zero new dependencies). 
 > Code review APPROVED (comment-only fixes to stale docs in Phase 6, behavior unchanged).
@@ -50,10 +50,10 @@ installed, use `~/.platformio/penv/bin/pio` or the PlatformIO toolbar.
 
 ### Building
 ```bash
-# Build the default environment (esp32-s3-devkitm-1)
-pio run
-
-# Explicit environment
+# Build the firmware. ALWAYS pass -e: bare `pio run` builds every environment,
+# including [env:native], which is a host TEST environment and is not buildable
+# with `pio run` — it has no ESP-IDF framework, so compiling src/ into it fails.
+# `pio test -e native` is the correct way to exercise that environment.
 pio run -e esp32-s3-devkitm-1
 
 # Clean build artifacts
@@ -90,7 +90,10 @@ pio test -e native
 pio test -e native -v
 
 # Run JavaScript tests (dashboard-logic.js pure functions, Phase 6+)
-node --test test/web/
+# NOTE: pass the glob, not the directory. `node --test test/web/` fails with
+# MODULE_NOT_FOUND on Node 24 (verified on v24.13.1) — Node tries to execute the
+# directory as a module instead of discovering tests inside it.
+node --test test/web/*.test.mjs
 
 # Run the PlatformIO test suite on-device (ESP32-S3 board must be connected)
 pio test -e esp32-s3-devkitm-1
@@ -303,13 +306,13 @@ The workaround manually:
   - Asset embedding workaround is a one-time investment specific to this PlatformIO/IDF version combo; documented for future maintenance.
 - **Impact**:
   - `pio test -e native` unchanged: still 39 C tests (no new C functionality).
-  - `node --test test/web/` new: 15 JS tests for dashboard-logic (pure functions). No CI integration yet; manually invoked with `node --test`.
+  - `node --test test/web/*.test.mjs` new: 15 JS tests for dashboard-logic (pure functions). No CI integration yet; manually invoked with `node --test`. Pass the glob, not the directory — the directory form fails on Node 24.
   - Device RAM/flash: 32.6% RAM (106,692 B), 30.4% flash (957,040 B); +0.5% flash vs Phase 5 (asset embedding overhead). Total 54 host-run tests across project (39 C + 15 JS).
   - Device build verified with clean rebuild (`rm -rf .pio/build && pio run`): 0 warnings, link succeeds, symbols accessible to http_api.c.
   - Code review: one BLOCKING round (stale/self-contradictory comments in CMakeLists.txt and http_api.c claiming `board_build.embed_txtfiles` was the working mechanism when it was actually abandoned). Fixed directly (comment-only, zero behavior change), re-verified build clean. Final verdict: APPROVED.
   - Security review: PASS. No new user-input surface, zero new dependencies, no new external system integrations.
 - **Migration Notes**:
-  - Fresh checkouts must run `node --test test/web/` to verify new JS tests pass (only requires Node.js; works in CI).
+  - Fresh checkouts must run `node --test test/web/*.test.mjs` to verify new JS tests pass (only requires Node.js; works in CI).
   - Manual browser verification: `curl http://192.168.x.x/` returns the full HTML dashboard; `curl http://192.168.x.x/api/now | jq` confirms JSON endpoint still works. Open browser to `http://hydroponics.local/` (or IP) to see rendered dashboard polling `/api/now` and `/api/history` every ~30 seconds.
   - This phase marks **feature-complete for v1**: all 6 phases implemented, tested, and committed. Phases 1–5 remain unchanged and locked. Future work (Phase 7+) for v2 would include pump relay control, more granular time-series options, or additional sensors.
 
