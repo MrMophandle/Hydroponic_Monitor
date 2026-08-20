@@ -110,12 +110,121 @@
     };
   }
 
+  /**
+   * Finite-value range for one numeric series, or null when the series has
+   * nothing plottable. `isFinite` is the same predicate app.js's plotSeries
+   * uses — the two MUST agree, or the renderer and the empty-state check
+   * disagree about whether there is anything to draw.
+   */
+  function finiteRange(values) {
+    if (!values || !values.length) {
+      return null;
+    }
+    var min = null;
+    var max = null;
+    var count = 0;
+    for (var i = 0; i < values.length; i++) {
+      var v = values[i];
+      if (typeof v !== 'number' || !isFinite(v)) {
+        continue;
+      }
+      count++;
+      if (min === null || v < min) {
+        min = v;
+      }
+      if (max === null || v > max) {
+        max = v;
+      }
+    }
+    return count === 0 ? null : { min: min, max: max, count: count };
+  }
+
+  /**
+   * True when the chart has at least one finite point to draw.
+   *
+   * Added after bench bring-up (2026-08-20). With both sensors unplugged
+   * every lux/temp_c entry is null, so the canvas rendered as a blank
+   * 900x320 box — visually indistinguishable from a chart that failed to
+   * render. The renderer needs an explicit signal to branch on so it can
+   * say "no data yet" instead of showing nothing at all.
+   *
+   * `level` is deliberately NOT considered: it is categorical and is not
+   * plotted, so a working level switch must not suppress the empty state
+   * for the two numeric series.
+   */
+  function hasPlottableData(series) {
+    if (!series) {
+      return false;
+    }
+    return finiteRange(series.lux) !== null || finiteRange(series.temp_c) !== null;
+  }
+
+  function formatNumber(v) {
+    return String(Math.round(v * 100) / 100);
+  }
+
+  function describeRange(range, unit) {
+    if (range.min === range.max) {
+      return formatNumber(range.min) + ' ' + unit;
+    }
+    return formatNumber(range.min) + ' to ' + formatNumber(range.max) + ' ' + unit;
+  }
+
+  /**
+   * Text equivalent of the history chart, for the canvas's aria-label.
+   *
+   * The <canvas> shipped with no role, no aria-label and no fallback
+   * content, so it did not appear in the accessibility tree at all
+   * (verified in Chrome at the bench, 2026-08-20): a screen-reader user got
+   * the three metric tiles and no indication that 24 hours of history
+   * existed. A canvas cannot expose its pixels to assistive tech, so the
+   * only honest fix is an explicit summary.
+   *
+   * Never invents a range it does not have — an offline series is reported
+   * as offline rather than omitted silently, so the reader can tell the
+   * difference between "no light data" and "light data I forgot to mention".
+   */
+  function buildChartAriaLabel(series) {
+    var labels = (series && series.labels) || [];
+    var n = labels.length;
+    if (n === 0) {
+      return '24-hour history chart. No readings recorded yet.';
+    }
+
+    var sampleCount = n + (n === 1 ? ' sample' : ' samples');
+    var tempRange = finiteRange(series.temp_c);
+    var luxRange = finiteRange(series.lux);
+
+    if (tempRange === null && luxRange === null) {
+      return (
+        '24-hour history chart over ' +
+        sampleCount +
+        '. No plottable data. Water temperature and ambient light are both offline.'
+      );
+    }
+
+    var parts = ['24-hour history chart over ' + sampleCount + '.'];
+    parts.push(
+      tempRange !== null
+        ? 'Water temperature ' + describeRange(tempRange, '°C') + '.'
+        : 'Water temperature offline.'
+    );
+    parts.push(
+      luxRange !== null
+        ? 'Ambient light ' + describeRange(luxRange, 'lux') + '.'
+        : 'Ambient light offline.'
+    );
+    return parts.join(' ');
+  }
+
   var DashboardLogic = {
     formatReadingTimestamp: formatReadingTimestamp,
     deriveMetricBadge: deriveMetricBadge,
     deriveLevelBadge: deriveLevelBadge,
     isPreFirstSample: isPreFirstSample,
     buildChartSeries: buildChartSeries,
+    hasPlottableData: hasPlottableData,
+    buildChartAriaLabel: buildChartAriaLabel,
   };
 
   if (typeof module !== 'undefined' && module.exports) {

@@ -1,6 +1,6 @@
 // dashboard-logic.test.mjs — host tests for the pure browser-side logic
 // module (src/web/dashboard-logic.js). Run with Node's built-in test runner:
-//   node --test test/web/
+//   node --test test/web/*.test.mjs
 //
 // This is the browser-side instance of the project's Pure-Logic /
 // Device-Only Split (systemPatterns.md): dashboard-logic.js has zero DOM
@@ -20,6 +20,8 @@ const {
   deriveLevelBadge,
   isPreFirstSample,
   buildChartSeries,
+  hasPlottableData,
+  buildChartAriaLabel,
 } = DashboardLogic;
 
 // ---------------------------------------------------------------------------
@@ -181,4 +183,116 @@ test('buildChartSeries handles an empty history payload without throwing', () =>
   const series = buildChartSeries(history);
   assert.equal(series.labels.length, 0);
   assert.equal(series.lux.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// hasPlottableData — distinguishes "chart is empty because there is genuinely
+// nothing numeric to draw" from "chart is empty because it broke". Added after
+// bench bring-up (2026-08-20): with both sensors unplugged every lux/temp_c
+// value is null, and the canvas rendered as a blank box indistinguishable from
+// a failed render. The renderer needs an explicit predicate to branch on.
+// ---------------------------------------------------------------------------
+
+test('hasPlottableData is false when every numeric value is null', () => {
+  // Exactly the observed bench state: both sensors offline, level still
+  // reporting. level is categorical and is not plotted, so it must not
+  // count as plottable data.
+  const series = {
+    labels: ['a', 'b', 'c'],
+    lux: [null, null, null],
+    temp_c: [null, null, null],
+    level: ['FULL', 'FULL', 'FULL'],
+  };
+  assert.equal(hasPlottableData(series), false);
+});
+
+test('hasPlottableData is false for an empty series', () => {
+  assert.equal(hasPlottableData({ labels: [], lux: [], temp_c: [], level: [] }), false);
+});
+
+test('hasPlottableData is true when a single finite value exists in either series', () => {
+  const luxOnly = { labels: ['a', 'b'], lux: [null, 12.5], temp_c: [null, null], level: [] };
+  const tempOnly = { labels: ['a', 'b'], lux: [null, null], temp_c: [19.25, null], level: [] };
+  assert.equal(hasPlottableData(luxOnly), true);
+  assert.equal(hasPlottableData(tempOnly), true);
+});
+
+test('hasPlottableData ignores non-finite numbers that are not null', () => {
+  // NaN/Infinity must not be treated as plottable — plotSeries filters on
+  // isFinite, so the predicate has to agree with it or the two disagree
+  // about whether to draw the empty state.
+  const series = {
+    labels: ['a', 'b'],
+    lux: [NaN, Infinity],
+    temp_c: [-Infinity, NaN],
+    level: [],
+  };
+  assert.equal(hasPlottableData(series), false);
+});
+
+test('hasPlottableData tolerates a malformed series without throwing', () => {
+  assert.equal(hasPlottableData(null), false);
+  assert.equal(hasPlottableData({}), false);
+});
+
+// ---------------------------------------------------------------------------
+// buildChartAriaLabel — the <canvas> carried no role, no aria-label and no
+// fallback content, so it did not appear in the accessibility tree at all
+// (verified in Chrome at the bench): a screen-reader user got the three tiles
+// and no indication the 24-hour history existed. This builds the text
+// equivalent app.js attaches to the canvas.
+// ---------------------------------------------------------------------------
+
+test('buildChartAriaLabel describes the empty case without implying a broken chart', () => {
+  const series = {
+    labels: ['a', 'b'],
+    lux: [null, null],
+    temp_c: [null, null],
+    level: ['FULL', 'FULL'],
+  };
+  const label = buildChartAriaLabel(series);
+  assert.match(label, /no .*data/i);
+  // Must not claim a reading range it does not have.
+  assert.doesNotMatch(label, /\d+(\.\d+)?\s*(°C|lux)/);
+});
+
+test('buildChartAriaLabel reports no readings at all for an empty series', () => {
+  const label = buildChartAriaLabel({ labels: [], lux: [], temp_c: [], level: [] });
+  assert.match(label, /no readings/i);
+});
+
+test('buildChartAriaLabel states the range and sample count for each plotted series', () => {
+  const series = {
+    labels: ['a', 'b', 'c'],
+    lux: [100, 250, 400],
+    temp_c: [18.5, 19, 20.25],
+    level: ['FULL', 'FULL', 'MID'],
+  };
+  const label = buildChartAriaLabel(series);
+  assert.match(label, /18\.5/);
+  assert.match(label, /20\.25|20\.3/);
+  assert.match(label, /100/);
+  assert.match(label, /400/);
+  assert.match(label, /3 samples/);
+});
+
+test('buildChartAriaLabel omits a series that has no finite values', () => {
+  // Temperature offline, light working: the label must describe light and
+  // say temperature is offline, not invent a temperature range.
+  const series = {
+    labels: ['a', 'b'],
+    lux: [100, 200],
+    temp_c: [null, null],
+    level: ['FULL', 'FULL'],
+  };
+  const label = buildChartAriaLabel(series);
+  assert.match(label, /100/);
+  assert.match(label, /temperature/i);
+  assert.match(label, /offline/i);
+  assert.doesNotMatch(label, /temperature[^.]*\d+(\.\d+)?\s*°C/i);
+});
+
+test('buildChartAriaLabel tolerates a malformed series without throwing', () => {
+  assert.equal(typeof buildChartAriaLabel(null), 'string');
+  assert.equal(typeof buildChartAriaLabel({}), 'string');
 });
