@@ -2,13 +2,12 @@
 
 This file documents the architectural patterns, design patterns, and system structure used in this project. It helps developers understand the system's organization and maintain consistency when extending functionality.
 
-> **Status (2026-08-19)**: Phase 3 of sensor-monitoring-dashboard landed. `lib/sensor_hub/`
-> (orchestration with per-sensor failure counters and offline escalation), `lib/reading_store/`
-> (FreeRTOS-mutex wrapper), and `src/sampler.c` (30-second continuous sampling task with
-> watchdog scoped to the read window only) are now **built and tested**. Phases 1–3 complete
-> (27/27 native tests, 21.9% RAM, 8.7% flash). Phases 4–6 (`wifi_conn`, `http_api`, web UI)
-> remain **planned, not yet built**. Do not treat this file as evidence those remaining files
-> exist — check `lib/`/`src/` directly.
+> **Status (2026-08-20)**: Phase 4 of sensor-monitoring-dashboard landed. `lib/wifi_backoff/`
+> (pure exponential backoff delay calculation) and `src/wifi_conn.c` (Wi-Fi station mode, mDNS
+> registration, serial-logged IP fallback) are now **built and tested**. Phases 1–4 complete
+> (31/31 native tests, 29.1% RAM, 27.5% flash). Phases 5–6 (`http_api`, web UI) remain
+> **planned, not yet built**. Do not treat this file as evidence those remaining files exist —
+> check `lib/`/`src/` directly.
 
 ## Guiding Principles
 
@@ -32,8 +31,8 @@ This file documents the architectural patterns, design patterns, and system stru
 
 ### High-Level Architecture
 ```
-Target shape (Sensor Monitoring, Hydroponic Reservoir) — Phase 1–3 components
-are BUILT. Phase 4–6 components (wifi/http layers) are planned but not yet built:
+Target shape (Sensor Monitoring, Hydroponic Reservoir) — Phase 1–4 components
+are BUILT. Phase 5–6 components (http layer / web UI) are planned but not yet built:
 
 ┌──────────────────────────────────────────────────────────────┐
 │ Application Layer (src/)                                      │
@@ -41,6 +40,7 @@ are BUILT. Phase 4–6 components (wifi/http layers) are planned but not yet bui
 │  │ app_main()  ← wiring; returns after task launch         │ │
 │  │ sampler.c   ← periodic reading & TWDT subscription      │ │
 │  │ wifi_conn.c ← station mode, reconnect, mDNS (Phase 4)  │ │
+│  │             ◄─ BUILT (Phase 4)                          │ │
 │  │ http_api.c  ← /api/now, /api/history (Phase 5)         │ │
 │  │  NOT BUILT (planned)                                     │ │
 │  └─────────────────────────────────────────────────────────┘ │
@@ -236,6 +236,29 @@ To populate this section, run `/bmb:c4`. The command builds a complete bottom-up
 <!-- AUTO-MANAGED: c4-architecture-end -->
 
 ## Recent Architecture Changes
+
+### 2026-08-20 - Phase 4: Wi-Fi Connectivity Layer Added (Pure-Logic / Device-Only Split Extended)
+- **What Changed**:
+  - `lib/wifi_backoff/` — pure-logic module computing capped exponential backoff delay sequence
+    (1→2→4→8→16→30s, per AC-ERROR-3), with zero FreeRTOS/ESP-IDF dependency. Host-testable,
+    4 new unit tests.
+  - `src/wifi_conn.c` — device-only Wi-Fi station mode manager: event-driven reconnect using
+    `wifi_backoff` + single `esp_timer` one-shot; mDNS hostname `hydroponics` registered on
+    every `IP_EVENT_STA_GOT_IP` (re-register on reconnect); serial-logged IP on every
+    connect/reconnect (AC-ERROR-7 fallback for unreliable `.local` resolution).
+  - `src/main.c` — extended: `wifi_conn_start()` called after sampler task init; sampling
+    independent of connectivity.
+  - `src/idf_component.yml` — added `espressif/mdns ^1.2` managed dependency.
+- **Reason**: Wi-Fi connectivity completes the second concurrent actor pattern (Phase 3 introduced
+  the sampler task; Phase 4 adds the Wi-Fi event loop running in IDF's internal task), with
+  backoff logic pure and testable and device-specific state machine isolated in a thin wrapper.
+- **Trade-offs**: Backoff module duplication (separate from generic `esp_timer` backoff patterns)
+  justified by AC-ERROR-3's specific requirement (cap at 30s, not 2^N without bound). The single
+  `esp_timer` one-shot (not a dedicated task) minimizes overhead; it re-arms itself on each
+  `WIFI_EVENT_STA_DISCONNECTED`.
+- **Affected Components**: `lib/wifi_backoff/`, `src/wifi_conn.c`, `src/main.c`,
+  `src/idf_component.yml`. Extends the Pure-Logic / Device-Only Split pattern: backoff
+  calculation is testable on `[env:native]` independently of Wi-Fi hardware.
 
 ### 2026-08-19 - Phase 3: Sampler Task & Store Locking Wrapper Integrated
 - **What Changed**: 

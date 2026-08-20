@@ -30,3 +30,6 @@ memory-bank/.local/
 
 # Claude Code command output logs (verification runs, etc.)
 .claude-logs/
+
+# Build-agent scratch test-run logs (not memory-bank content; ephemeral)
+memory-bank/.test-logs/

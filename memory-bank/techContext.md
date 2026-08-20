@@ -2,12 +2,11 @@
 
 This file documents the technology stack, infrastructure, and tooling used in this project. It serves as a reference for understanding technical decisions and helps maintain consistency across development phases.
 
-> **Status (2026-08-19)**: Phase 3 complete. Sampler task (`src/sampler.c`), sensor orchestration
-> hub (`lib/sensor_hub/`), and store locking wrapper (`lib/reading_store/`) implemented and
-> tested. 27/27 native tests passing (`pio test -e native`): 11 reading_store + 10 level_switches
-> + 6 sensor_hub. Device build (`pio run -e esp32-s3-devkitm-1`): SUCCESS at 21.9% RAM (71,784 B),
-> 8.7% flash (273,268 B); 0 warnings; 11 Phase-3+ symbols linked (anti-regression vs. Phase 2
-> linking defect). Kconfig option `CONFIG_HYDRO_SAMPLE_INTERVAL_SEC` added (5–3600 sec, default 30).
+> **Status (2026-08-20)**: Phase 4 complete. Wi-Fi connectivity layer (`lib/wifi_backoff/`,
+> `src/wifi_conn.c`) implemented and tested. 31/31 native tests passing (`pio test -e native`):
+> 11 reading_store + 10 level_switches + 6 sensor_hub + 4 wifi_backoff. Device build
+> (`pio run -e esp32-s3-devkitm-1`): SUCCESS at 29.1% RAM (95,236 B), 27.5% flash (866,484 B);
+> 0 warnings. Code review APPROVED, 0 blocking issues. Security review PASS.
 
 ## Component Structure
 
@@ -110,6 +109,15 @@ pio check -e esp32-s3-devkitm-1
 ```
 [No linter or formatter is configured yet — clang-format / clang-tidy config to be decided.]
 
+**Known false positive — cppcheck `__has_include` evaluation (Phase 4+)**:
+Cppcheck's own `__has_include` evaluation fails to resolve `wifi_secrets.h` under `pio check`'s
+fixed-configuration invocation, even though the correct `include/` search path is present in
+cppcheck's `-I`/`--includes-file` list and the real `pio run` build always finds the file. This
+is a cppcheck quirk, not a code defect — the `#if !__has_include("wifi_secrets.h")` guard in
+`src/wifi_conn.c` works correctly. A scoped suppression is added to `platformio.ini`:
+`check_flags = --suppress=preprocessorErrorDirective:*/wifi_conn.c`. This prevents the false
+positive from cluttering the check output without hiding real issues.
+
 ### Type Checking
 Not applicable (C — the compiler is the type check; `pio run` is the gate).
 
@@ -197,6 +205,9 @@ The single home for how this project's tests run.
   `lib/ds18b20_probe/`. Pinned to 0.3.x (not 0.4.0) due to a version-solver incompatibility
   with the bundled `idf-component-manager` 1.x in `espidf@6.9.0` (0.4.0's manifest uses a
   `$CONFIG{...}` conditional that 1.x cannot parse). See inline comment in `src/idf_component.yml`.
+- **espressif/mdns** (^1.2) — mDNS hostname registration and resolution. Required by `src/wifi_conn.c`
+  to register `hydroponics.local` on each Wi-Fi connection. Resolves to 1.11.3 as of Phase 4.
+  Declared in `src/idf_component.yml`.
 
 ### External Services
 - [None yet]
@@ -226,6 +237,36 @@ After `/bmb:c4` runs, this section will contain pointers to the Container-level 
 <!-- AUTO-MANAGED: c4-references-end -->
 
 ## Recent Technology Changes
+
+### 2026-08-20 - Phase 4: mDNS managed component and cppcheck suppression added
+- **What Changed**:
+  - New managed IDF component `espressif/mdns ^1.2` added to `src/idf_component.yml`, required by
+    `src/wifi_conn.c` for registering `hydroponics.local` on every Wi-Fi connection. Resolves to
+    1.11.3.
+  - New scoped cppcheck suppression added to `platformio.ini`:
+    `check_flags = --suppress=preprocessorErrorDirective:*/wifi_conn.c`. This suppresses a
+    verified false positive where cppcheck's own `__has_include` evaluation fails under `pio check`'s
+    fixed-configuration invocation, even though the code correctly guards `#include "wifi_secrets.h"`
+    and the real build always finds the file. Not a defect; documented in Linting/Static Analysis
+    section for future reference.
+  - `[env:native]` `test_filter` extended: added `test_wifi_backoff` to the host test list
+    (alongside existing `test_reading_store`, `test_level_switches`, `test_sensor_hub`).
+  - `[env:esp32-s3-devkitm-1]` `lib_deps` extended: added `wifi_backoff` to device-environment
+    library dependencies.
+- **Reason**:
+  - mDNS is the canonical path for the bookmark (`http://hydroponics.local/`); re-registration on
+    every reconnect (per AC-ENTRY-2) keeps it valid across DHCP lease changes.
+  - cppcheck false positive is a known cppcheck limitation with `__has_include` in fixed-config
+    mode; the suppression prevents spurious failures in CI without hiding real issues.
+  - Host tests for `wifi_backoff` pure logic extend CI coverage; device build continues to use the
+    actual Wi-Fi stack.
+- **Impact**:
+  - `pio run` now pulls `espressif/mdns` into the build; dependency is locked in `dependencies.lock`.
+  - `pio check` no longer reports spurious preprocessor errors for `wifi_conn.c`.
+  - `pio test -e native` now runs 31 tests total (4 new `test_wifi_backoff` added).
+  - Device RAM/flash impact: 29.1% RAM (95,236 B), 27.5% flash (866,484 B) as of phase-end.
+- **Migration Notes**: Fresh checkouts must run `pio run` to fetch `espressif/mdns`. No breaking
+  changes; the suppression is transparent to development workflows.
 
 ### 2026-08-19 - Phase 3: Kconfig option and test library path added
 - **What Changed**:

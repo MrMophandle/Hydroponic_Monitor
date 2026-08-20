@@ -15,6 +15,16 @@
 # The BH1750 I2C driver (lib/bh1750) needs no managed component — it is
 # written directly against the in-tree i2c_master API (ESP-IDF 5.2+, provided
 # by the espidf@6.9.0 platform pin from Phase 1).
+#
+# - espressif/mdns: official IDF-maintained mDNS responder, used by
+#   src/wifi_conn.c (Phase 4) to register the `hydroponics.local` hostname
+#   (AC-ENTRY-2) on every connect/reconnect. Pinned to the 1.x line, which
+#   targets ESP-IDF 5.x; unlike espressif/ds18b20's 0.4.0, it has no known
+#   idf-component-manager version-solver conflict with the 1.x manager
+#   vendored inside espidf@6.9.0's toolchain, but the pin is still recorded
+#   explicitly (not left to "latest") for the same reproducibility reason as
+#   the other two entries here.
 dependencies:
   espressif/onewire_bus: "^1.0.0"
   espressif/ds18b20: "^0.3.1"
+  espressif/mdns: "^1.2"

@@ -38,6 +38,7 @@
 #include "level_switches.h"
 #include "reading_store.h"
 #include "sampler.h"
+#include "wifi_conn.h"
 
 static const char *TAG = "main";
 
@@ -228,4 +229,13 @@ void app_main(void) {
     reading_store_init();
     sampler_start();
     ESP_LOGI(TAG, "sampler started (interval: %d s)", CONFIG_HYDRO_SAMPLE_INTERVAL_SEC);
+
+    /* Phase 4: station-mode Wi-Fi + mDNS. Deliberately independent of the
+     * sampler above — connectivity is the delivery channel, not the
+     * measurement (AC-ERROR-3), so it starts after sampling regardless of
+     * whether it ever succeeds. wifi_conn_start() wires event handlers and
+     * returns immediately; the actual connect/reconnect sequence runs
+     * asynchronously. */
+    wifi_conn_start();
+    ESP_LOGI(TAG, "wifi connectivity starting");
 }

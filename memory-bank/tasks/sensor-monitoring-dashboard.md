@@ -668,7 +668,7 @@ Phase 3 — sampler and store integration:
       subscribe/unsubscribe bracketing the read window (never across the 30 s sleep)
 
 Phase 4 — connectivity:
-- [ ] `include/wifi_conn.h`, `src/wifi_conn.c` — station mode, backoff reconnect, mDNS
+- [x] `include/wifi_conn.h`, `src/wifi_conn.c` — station mode, backoff reconnect, mDNS
 
 Phase 5 — HTTP API:
 - [ ] `lib/reading_json/include/reading_json.h`, `lib/reading_json/src/reading_json.c`
@@ -693,8 +693,10 @@ Phase 6 — web UI:
       escalation (offline at 5 consecutive failures), watchdog subscription **scoped to the read
       window only**. 27/27 native tests (6 new for sensor_hub failure logic). Device: 21.9% RAM,
       8.7% flash, 0 warnings, 11 symbols linked
-- [ ] Phase 4: Connectivity — Wi-Fi station with backoff reconnect, mDNS hostname, and the
-      serial-logged IP fallback
+- [x] Phase 4: Connectivity — Wi-Fi station with backoff reconnect, mDNS hostname, and the
+      serial-logged IP fallback. `wifi_backoff` pure module extends the Pure-Logic/Device-Only
+      Split to connectivity (4 new tests, 31/31 native suite). Device: 29.1% RAM, 27.5% flash,
+      0 warnings. `espressif/mdns` added as a managed component.
 - [ ] Phase 5: HTTP API — `/api/now` and `/api/history`, downsampled under the lock into a
       bounded snapshot then chunk-streamed lock-free
 - [ ] Phase 6: Web UI — embedded page, live values, 24-hour chart, offline/`FAULT` badges
@@ -708,9 +710,9 @@ Phase 6 — web UI:
 ## Execution State
 
 **Build Status**: IDLE
-**Current Phase**: BUILD (Phase 4 next)
-**Last Completed**: Phase 3 (sampler & store) — committed to feature/sensor-monitoring-dashboard
-**Can Resume**: NO — Phase 3 fully committed; next /bmb:build starts Phase 4 fresh
+**Current Phase**: BUILD (Phase 5 next)
+**Last Completed**: Phase 4 (connectivity) — committed to feature/sensor-monitoring-dashboard
+**Can Resume**: NO — Phase 4 fully committed; next /bmb:build starts Phase 5 fresh
 
 **Outstanding manual hardware-verification items from Phase 1** (carried forward —
 this environment still has no board attached):
@@ -959,6 +961,72 @@ attached in this environment):
 - I2C/GPIO double-init resolution: confirm on real hardware whether both init sequences complete
   without conflicts, or whether one needs removal/sequencing. Currently flagged as bench-verify
   before Phase 3 can be called fully closed per the Test Strategy.
+
+### Phase 4 — Connectivity (2026-08-20)
+
+**Step 3 — TDD Implementation**
+- Implemented `lib/wifi_backoff/` pure-logic module computing the capped exponential backoff delay
+  sequence (1→2→4→8→16→30s, per AC-ERROR-3), following the Pure-Logic/Device-Only Split pattern.
+  Zero FreeRTOS/ESP-IDF headers; fully host-testable.
+- Implemented `include/wifi_conn.h` and `src/wifi_conn.c` device-only module: Wi-Fi station mode
+  init, `#if !__has_include("wifi_secrets.h")` / `#error` guard (AC-ERROR-6), event-driven reconnect
+  using `wifi_backoff` + single `esp_timer` one-shot (not a dedicated task), mDNS hostname
+  `hydroponics` registered on `IP_EVENT_STA_GOT_IP` (AC-ENTRY-2), serial-logged IP on every
+  connect/reconnect showing both raw IP and mDNS URLs (AC-ERROR-7). No host tests — genuinely
+  requires a real AP per Test Strategy.
+- `test/test_wifi_backoff/test_wifi_backoff.c`: 4 new tests (floor-after-reset, doubling sequence,
+  cap holds, reset restores floor)
+- `src/idf_component.yml`: added `espressif/mdns ^1.2` managed dependency (resolves to 1.11.3)
+- `platformio.ini`: added `wifi_backoff` to device `lib_deps`; `test_wifi_backoff` to native
+  `test_filter`; scoped cppcheck suppression for verified false positive (see Step 9 note below)
+- `src/main.c`: added `wifi_conn_start()` call after `sampler_start()`; sampling not gated or
+  blocked by connectivity
+- Verified RED → GREEN: 4 new tests passing, 31/31 total native suite
+
+**Step 6 — Batch Testing**
+- `pio test -e native`: 31/31 PASS (11 reading_store + 10 level_switches + 6 sensor_hub +
+  4 wifi_backoff)
+- `pio run -e esp32-s3-devkitm-1`: SUCCESS; 29.1% RAM (95,236/327,680 B), 27.5% flash
+  (866,484/3,145,728 B); 0 compiler warnings
+- `pio check -e esp32-s3-devkitm-1`: PASS; 5 pre-existing LOW `unusedFunction` false positives
+  (unchanged from prior phases)
+
+**Step 7 — Integration Verification**
+- All three gates (native tests, device build, static analysis) PASS — verdict PASS, no
+  phase-relevant failures
+- **cppcheck `__has_include` false positive (verified, workaround scoped)**: Cppcheck's own
+  `__has_include` evaluation fails to resolve `wifi_secrets.h` under `pio check`'s fixed-configuration
+  invocation (verified reproducible by replaying the captured cppcheck argv with only the `-D`
+  flags stripped, which then resolves correctly) even though the correct `include/` search path is
+  present in cppcheck's `-I`/`--includes-file` list, and the real `pio run` build always finds the
+  file. Not a code defect — the `#if` guard works; scoped cppcheck suppression
+  (`--suppress=preprocessorErrorDirective:*/wifi_conn.c`) added to `platformio.ini` as a
+  one-line mitigation recorded in techContext.md.
+
+**Step 8 — Code Review**
+- Code review APPROVED, 0 blocking issues
+- Security review: PASS (no hardcoded credentials outside gitignored `wifi_secrets.h`; `strlcpy`
+  used for bounded SSID/password copy; no format-string injection; `espressif/mdns` is official
+  Espressif component, well-maintained, no known CVEs)
+
+**Step 9 — Documentation**
+- Inline comments: `wifi_backoff.c` already carries substantial TDD-phase documentation; no
+  additions needed. `wifi_conn.c` similarly documented.
+- `systemPatterns.md`: Status banner updated to Phase 4 complete; architecture diagram marks
+  `wifi_conn.c` as BUILT (Phase 4); Phase 4 entry added to Recent Architecture Changes
+- `techContext.md`: Status banner updated with 31-test count and RAM/flash metrics;
+  `espressif/mdns` added to Managed IDF Components; Phase 4 entry added to Recent Technology
+  Changes; note added about the cppcheck false positive and scoped suppression
+
+**Outstanding manual hardware-verification items from Phase 4** (carried forward — no board
+attached in this environment):
+- `ping hydroponics.local` resolves on the LAN
+- Device rejoins automatically after a real AP reboot; sampling continues uninterrupted through
+  the outage
+- AC-ERROR-7 hardware check: IP logged over serial on initial connect AND after a forced reconnect;
+  page reachable via the logged IP with `.local` resolution bypassed
+- All previously-carried-forward Phase 1/2/3 hardware-verification items remain outstanding
+  (unchanged by this phase)
 
 ---
 
