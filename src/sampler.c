@@ -25,18 +25,20 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include <time.h>
+
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_task_wdt.h"
-#include "esp_timer.h"
 
 #include "bh1750.h"
 #include "ds18b20_probe.h"
 #include "level_switches.h"
 #include "reading_store.h"
 #include "sensor_hub.h"
+#include "time_sync.h"
 
 static const char *TAG = "sampler";
 
@@ -295,14 +297,23 @@ static void sampler_task(void *arg) {
             }
         }
 
+        /* Phase 5: epoch seconds (wall-clock, via time_sync's SNTP-synced
+         * time()) replace esp_timer_get_time()'s device-uptime seconds —
+         * uptime resets to zero on every reboot and cannot anchor history
+         * across restarts or feed a future day/night-scheduled pump relay.
+         * time_sync_is_valid() reports false (and READING_VALID_TIME_BIT
+         * stays clear) until the first successful SNTP sync, so a
+         * 1970-anchored epoch on an unsynced boot is flagged rather than
+         * presented as trustworthy. */
         sensor_reading_t reading = {
-            .uptime_sec = (uint32_t)(esp_timer_get_time() / 1000000LL),
+            .epoch_sec = (uint32_t)time(NULL),
             .lux = hub_reading.lux,
             .temp_c = hub_reading.temp_c,
             .level = to_store_level_state(hub_reading.level),
-            .valid = (uint8_t)((hub_reading.light_valid ? 0x01 : 0) |
-                                (hub_reading.temp_valid ? 0x02 : 0) |
-                                (hub_reading.level_valid ? 0x04 : 0)),
+            .valid = (uint8_t)((hub_reading.light_valid ? READING_VALID_LIGHT_BIT : 0) |
+                                (hub_reading.temp_valid ? READING_VALID_TEMP_BIT : 0) |
+                                (hub_reading.level_valid ? READING_VALID_LEVEL_BIT : 0) |
+                                (time_sync_is_valid() ? READING_VALID_TIME_BIT : 0)),
         };
         /* Pushed unconditionally, even on a total-failure cycle — a failed
          * sensor's sample still gets a slot in the ring with its valid bit

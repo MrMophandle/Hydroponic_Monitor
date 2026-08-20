@@ -31,10 +31,12 @@
 #include "esp_system.h"
 
 #include "device_status.h"
+#include "http_api.h"
 #include "level_switches.h"
 #include "reading_store.h"
 #include "sampler.h"
 #include "sensor_hub.h"
+#include "time_sync.h"
 #include "wifi_conn.h"
 
 static const char *TAG = "main";
@@ -137,4 +139,33 @@ void app_main(void) {
      * asynchronously. */
     wifi_conn_start();
     ESP_LOGI(TAG, "wifi connectivity starting");
+
+    /* Phase 5: SNTP wall-clock time (needs the Wi-Fi just started above —
+     * see include/time_sync.h) and the HTTP API (/, /api/now,
+     * /api/history). Neither owns a sensor peripheral; http_api reads
+     * through reading_store, same as any other consumer would. */
+    esp_err_t time_sync_err = time_sync_start();
+    if (time_sync_err == ESP_OK) {
+        ESP_LOGI(TAG, "SNTP time sync starting");
+    } else {
+        /* Non-fatal: readings keep recording with their time_valid bit
+         * clear until this is fixed and a sync eventually completes. */
+        ESP_LOGW(TAG, "SNTP time sync FAILED to start (%s) — timestamps stay unsynced",
+                 esp_err_to_name(time_sync_err));
+    }
+
+    esp_err_t http_err = http_api_start();
+    if (http_err == ESP_OK) {
+        ESP_LOGI(TAG, "HTTP API started");
+    } else {
+        /* Unlike a single sensor going offline, this means the dashboard is
+         * entirely unreachable — mirror how sampler_start() failure is
+         * surfaced above. No dedicated "API down" status exists yet;
+         * WIFI_DOWN is the closest existing seam for "the delivery channel
+         * to the user is down" and is reused here rather than inventing a
+         * new device_status_t value in this phase. */
+        ESP_LOGE(TAG, "HTTP API FAILED to start (%s) — dashboard is unreachable",
+                 esp_err_to_name(http_err));
+        status_set(DEVICE_STATUS_WIFI_DOWN);
+    }
 }

@@ -90,4 +90,35 @@ menu "Hydroponic Monitor"
 
     endmenu
 
+    menu "SNTP / Time"
+
+        config HYDRO_SNTP_SERVER
+            string "SNTP server hostname"
+            default "pool.ntp.org"
+            help
+                NTP server queried by src/time_sync.c to synchronize
+                wall-clock time. This device has no battery-backed RTC, so
+                every reading's timestamp is unsynced (a 1970-anchored
+                epoch, flagged invalid via READING_VALID_TIME_BIT) until
+                this server is reachable over the configured Wi-Fi and the
+                first sync completes.
+
+        config HYDRO_SNTP_TZ
+            string "POSIX TZ string for local time"
+            default "UTC0"
+            help
+                POSIX TZ string passed to setenv("TZ", ...)/tzset() so
+                localtime()/mktime()-based logic (a future day/night-
+                scheduled pump relay) computes LOCAL time, not UTC.
+                Day/night is inherently a local-time concept and DST shifts
+                the boundary twice a year, so this is not optional polish.
+                Example for US Eastern with DST: "EST5EDT,M3.2.0,M11.1.0".
+                The default "UTC0" is a SAFE PLACEHOLDER, NOT this device's
+                real deployment timezone — it must be changed via
+                menuconfig to the actual local zone for correct local-time
+                behavior; this file cannot know where the device is
+                installed.
+
+    endmenu
+
 endmenu

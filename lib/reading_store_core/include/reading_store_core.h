@@ -55,12 +55,42 @@ typedef enum {
 } level_state_t;
 
 /**
- * One sample. `valid` is a bitfield of per-sensor validity (bit cleared on a
- * failed read for that sensor); a failed read is never stored as 0.0 for its
- * value. Approximately 20 bytes.
+ * Validity bits within sensor_reading_t.valid. Bits 0-2 were assigned in
+ * Phase 1-3 (light/temp/level); bit 3 is claimed here (Phase 5) for
+ * time_valid, leaving bits 4-7 spare for future sensors. A failed read (or,
+ * for TIME, a device that has never completed an SNTP sync) is never
+ * represented as a plausible-looking value with its bit still set — the bit
+ * is the source of truth, not the value.
+ */
+#define READING_VALID_LIGHT_BIT ((uint8_t)(1u << 0))
+#define READING_VALID_TEMP_BIT ((uint8_t)(1u << 1))
+#define READING_VALID_LEVEL_BIT ((uint8_t)(1u << 2))
+/** Set once the device has completed at least one successful SNTP sync
+ * (src/time_sync.c). Clear means `epoch_sec` is not trustworthy wall-clock
+ * time — most likely a 1970-anchored epoch from a device with no
+ * battery-backed RTC that has not yet reached an AP, or has reached one but
+ * not yet completed its first sync. Consumers (reading_json, and eventually
+ * a day/night-scheduled pump relay) MUST check this bit before trusting
+ * `epoch_sec` for anything beyond "record order". */
+#define READING_VALID_TIME_BIT ((uint8_t)(1u << 3))
+
+/**
+ * One sample. `valid` is a bitfield of per-sensor (+ time) validity (bit
+ * cleared on a failed read, or on unsynced time); a failed read is never
+ * stored as 0.0 for its value. Approximately 20 bytes.
+ *
+ * `epoch_sec` (Phase 5; was `uptime_sec` in Phases 1-4, holding
+ * `esp_timer_get_time() / 1000000` — device uptime, not a timestamp) now
+ * holds Unix epoch seconds from `time(NULL)`, stamped by the sampler
+ * (src/sampler.c) using wall-clock time from `time_sync` (src/time_sync.c)
+ * once SNTP has synced. Same uint32_t width — epoch seconds fit until 2106 —
+ * so this is a zero-RAM-cost, zero-ring-capacity-cost change. Renamed rather
+ * than kept as `uptime_sec` because the field's *meaning* changed, not just
+ * its value: leaving the old name would silently mislead every future reader
+ * of this struct into assuming it is still relative to boot.
  */
 typedef struct {
-    uint32_t uptime_sec;
+    uint32_t epoch_sec;
     float lux;
     float temp_c;
     level_state_t level;

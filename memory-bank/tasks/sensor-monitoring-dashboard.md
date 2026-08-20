@@ -676,27 +676,27 @@ Scope widened 2026-08-20 (see "Phase 5 Scope Change" in Execution State). Phase 
 JSON contract, and a planned pump relay needs *trustworthy local* wall-clock time for day/night
 scheduling — so the timestamp representation must be right before Phase 6 consumes it, not after.
 
-- [ ] `lib/reading_json/include/reading_json.h`, `lib/reading_json/src/reading_json.c`
-- [ ] `test/test_reading_json/test_reading_json.c`
-- [ ] `include/http_api.h`, `src/http_api.c` — `esp_http_server`, chunked streaming
-- [ ] `include/time_sync.h`, `src/time_sync.c` — **new**: SNTP client + `TZ`/`tzset()` for
+- [x] `lib/reading_json/include/reading_json.h`, `lib/reading_json/src/reading_json.c`
+- [x] `test/test_reading_json/test_reading_json.c`
+- [x] `include/http_api.h`, `src/http_api.c` — `esp_http_server`, chunked streaming
+- [x] `include/time_sync.h`, `src/time_sync.c` — **new**: SNTP client + `TZ`/`tzset()` for
       **local** time (day/night is a local-time concept, so UTC alone is insufficient; DST will
       shift the night boundary twice a year). Exposes a "time is valid" predicate — the device
       has no battery-backed RTC, so after a power loss with the AP down `time()` returns 1970,
       and a consumer that schedules an actuator on that is a real-world hazard, not a cosmetic
       bug. Depends on Phase 4's Wi-Fi.
-- [ ] `src/Kconfig.projbuild` — **extend**: SNTP server + `TZ` string (per
+- [x] `src/Kconfig.projbuild` — **extend**: SNTP server + `TZ` string (per
       "Configuration Is Not Hard-Coded"; a POSIX TZ string is exactly the kind of value that
       must not be a literal)
-- [ ] `lib/reading_store_core/include/reading_store_core.h` — **extend**: `sensor_reading_t`
+- [x] `lib/reading_store_core/include/reading_store_core.h` — **extend**: `sensor_reading_t`
       `uptime_sec` → epoch seconds (same `uint32_t` width — epoch fits to 2106 — so zero RAM
       change and no ring-capacity change), plus a `time_valid` bit in the existing `valid`
       bitfield (bits 0-2 used, 5 spare, so this is free now and a struct migration later).
       Entries recorded before the first SNTP sync must be distinguishable, or the chart plots
       1970 next to today.
-- [ ] `src/sampler.c` — **extend**: stamp readings with epoch time + the `time_valid` bit
+- [x] `src/sampler.c` — **extend**: stamp readings with epoch time + the `time_valid` bit
       instead of `esp_timer_get_time()` uptime
-- [ ] `test/test_reading_store/test_reading_store.c` — **extend**: cover the `time_valid` bit
+- [x] `test/test_reading_store/test_reading_store.c` — **extend**: cover the `time_valid` bit
       and mixed valid/invalid-time entries through downsampling
 
 **Explicitly NOT in Phase 5** — these belong to the pump-relay feature, which is a separate
@@ -726,11 +726,14 @@ Phase 6 — web UI:
       serial-logged IP fallback. `wifi_backoff` pure module extends the Pure-Logic/Device-Only
       Split to connectivity (4 new tests, 31/31 native suite). Device: 29.1% RAM, 27.5% flash,
       0 warnings. `espressif/mdns` added as a managed component.
-- [ ] Phase 5: HTTP API + wall-clock time — `/api/now` and `/api/history`, downsampled under the
-      lock into a bounded snapshot then chunk-streamed lock-free; plus SNTP + local-time `TZ`,
-      the `uptime_sec` → epoch timestamp change, and a `time_valid` bit. Scope widened
-      2026-08-20 because this phase freezes the JSON contract and a planned pump relay needs
-      trustworthy local time.
+- [x] Phase 5: HTTP API + wall-clock time — `/api/now` and `/api/history`, downsampled under the
+      lock into a bounded snapshot then chunk-streamed lock-free (`reading_store_downsample()`'s
+      100ms-timeout→503 path finally exercised); plus SNTP + local-time `TZ`/`tzset()`,
+      `uptime_sec` → `epoch_sec`, and a `time_valid` bit. Scope widened 2026-08-20 because this
+      phase freezes the JSON contract and a planned pump relay needs trustworthy local time.
+      39/39 native tests (6 new `reading_json` + 2 extended `reading_store`). Device: 32.6% RAM,
+      29.9% flash, 0 warnings. `reading_json` is the Pure-Logic/Device-Only Split's second
+      instance. No new managed IDF components (SNTP + `esp_http_server` are in-tree ESP-IDF).
 - [ ] Phase 6: Web UI — embedded page, live values, 24-hour chart, offline/`FAULT` badges
 
 ## Creative Phases
@@ -742,9 +745,9 @@ Phase 6 — web UI:
 ## Execution State
 
 **Build Status**: IDLE
-**Current Phase**: BUILD (Phase 5 next)
-**Last Completed**: D1–D4 best-practice fixes (post-Phase-4) — committed to feature/sensor-monitoring-dashboard
-**Can Resume**: NO — Phase 4 + the D1–D4 fixes are fully committed; next /bmb:build starts Phase 5 fresh
+**Current Phase**: BUILD (Phase 6 next)
+**Last Completed**: Phase 5 — HTTP API + wall-clock time — committed to feature/sensor-monitoring-dashboard
+**Can Resume**: NO — Phase 5 is fully committed; next /bmb:build starts Phase 6 fresh
 
 ### Phase 5 Scope Change (2026-08-20, user-approved)
 
@@ -1136,6 +1139,136 @@ attached in this environment):
 - AC-ERROR-7 hardware check: IP logged over serial on initial connect AND after a forced reconnect;
   page reachable via the logged IP with `.local` resolution bypassed
 - All previously-carried-forward Phase 1/2/3 hardware-verification items remain outstanding
+  (unchanged by this phase)
+
+### Phase 5 — HTTP API + Wall-Clock Time (2026-08-20)
+
+**Step 3 — TDD Implementation**
+- Implemented `lib/reading_json/` (pure JSON serializer, callback-driven, no heap, zero
+  FreeRTOS/httpd/driver includes): `/api/now`-shaped single-reading serialization and
+  `/api/history`-shaped parallel arrays (`t`, `lux`, `temp_c`, `level`, `time_valid`), all
+  index-aligned by construction via a shared `emit_array()` helper driven by one `count`.
+  Invalid-bit readings serialize as `null`, never `0`. Second instance of the
+  Pure-Logic/Device-Only Split pattern (first was `reading_store_core`/`reading_store`); the
+  cross-half contract (who drives the callback, chunk-boundary safety) is stated explicitly in
+  `reading_json.h`, naming `http_api.c` as the responsible device-only caller.
+- Implemented `include/http_api.h`/`src/http_api.c`: `esp_http_server` serving `/` (Phase 6
+  placeholder), `/api/now`, `/api/history?points=`. Snapshot-then-stream per AC-HAPPY-3/
+  AC-ERROR-5: calls `reading_store_downsample()` (which internally acquires the store lock with
+  the existing 100ms timeout, downsamples into a static ≤500-entry snapshot, releases the lock,
+  and returns) and only then streams JSON via `httpd_resp_send_chunk()` — no network I/O ever
+  occurs while the lock is held. `ESP_ERR_TIMEOUT` maps to a real HTTP 503
+  (`httpd_resp_set_status` + empty body), not a hang or a dropped connection. `points` clamps to
+  `[1, 500]` (default 180) via bounds-checked `strtol` parsing of the query string — absent,
+  non-numeric, ≤0, and >500 all handled explicitly. Never touches a sensor peripheral or
+  `sensor_hub` — sources everything through `reading_store`, honoring One Owner Per Peripheral.
+  This is the first phase to actually exercise `reading_store_downsample()`'s 100ms
+  reader-timeout path, which had zero callers since Phase 3.
+- Implemented `include/time_sync.h`/`src/time_sync.c`: SNTP via the modern `esp_netif_sntp` API
+  (verified present in the pinned IDF 5.3.1 tree), plus `setenv("TZ", CONFIG_HYDRO_SNTP_TZ, 1)` +
+  `tzset()` for LOCAL time (day/night is a local-time concept; DST shifts the boundary). Exposes
+  `time_sync_is_valid()`: true once the SNTP sync callback fires, with a 2020-01-01
+  sanity-threshold fallback — false means the epoch is untrustworthy (no battery-backed RTC on
+  this WROOM-1; `time()` reads 1970 after a power loss with the AP down). Not host-testable (real
+  SNTP/network), consistent with `wifi_conn.c` carrying no host suite.
+- `lib/reading_store_core/include/reading_store_core.h`: `sensor_reading_t.uptime_sec` renamed to
+  `epoch_sec` (same `uint32_t` width — epoch fits to 2106 — zero RAM/ring-capacity change); added
+  named bit constants `READING_VALID_{LIGHT,TEMP,LEVEL,TIME}_BIT` (bits 0-3), replacing raw hex
+  literals at the one call site that builds the bitfield. `READING_VALID_TIME_BIT` is the new bit
+  3 of the 5 spare bits flagged as available back in Phase 1.
+- `src/sampler.c`: stamps `time(NULL)` + `time_sync_is_valid()`-derived `READING_VALID_TIME_BIT`
+  instead of `esp_timer_get_time()`'s device-uptime seconds. Peripheral ownership
+  (`sampler_sensors_init()`, the I2C/1-Wire/GPIO acquires) and TWDT read-window scoping are
+  byte-for-byte unchanged — this phase's only functional edit to this file is the one timestamp
+  struct-literal line.
+- `src/main.c`: wires `time_sync_start()` then `http_api_start()` after `wifi_conn_start()`, both
+  checked; `http_api_start()` failure escalates via the existing `device_status` seam (reused
+  `DEVICE_STATUS_WIFI_DOWN` as the closest existing state for "dashboard delivery channel down").
+  Both new modules are reachable from `app_main()` — confirmed by code review — so this phase does
+  not repeat the Phase 2 "built but never wired, silently dropped at link" defect.
+- `src/Kconfig.projbuild`: new "SNTP / Time" submenu — `HYDRO_SNTP_SERVER` (string, default
+  `pool.ntp.org`) and `HYDRO_SNTP_TZ` (POSIX TZ string; default is an explicitly-labeled
+  placeholder since the user's real timezone is unknown to the firmware author).
+- `platformio.ini`: `reading_json` added to `[env:esp32-s3-devkitm-1]` `lib_deps`;
+  `test_reading_json` added to `[env:native]` `test_filter`.
+- `test/test_reading_store/test_reading_store.c`: +2 tests covering the `time_valid` bit
+  (set/clear) and mixed valid/invalid-time entries surviving `reading_store_core_downsample()`
+  unchanged (13 tests total in this suite).
+- `test/test_reading_json/test_reading_json.c`: 6 new tests — now-shape serialization, invalid
+  sensor → `null` not `0`, empty-history well-formed empty arrays, mixed valid/invalid `time_valid`
+  per entry, parallel-arrays equal-length/index-aligned, chunk-boundary-safe concatenation.
+- RED CONFIRMED (`test_reading_json` failed to link — missing implementation, not a setup error;
+  the `test_reading_store` extensions needed no new production logic and passed alongside all
+  33 pre-existing tests throughout) → GREEN (39/39 full native suite).
+- Orchestrator-applied trivial cleanup post-code-review: removed an orphaned
+  `#include "esp_timer.h"` from `src/sampler.c` (this phase's own change replaced its only use,
+  `esp_timer_get_time()`, with `time(NULL)`); re-verified clean build (0 warnings) and 39/39 tests
+  after the removal.
+
+**Step 6/7 — Batch Testing / Integration Verification** (delegated to `bmb:build-verifier-agent`)
+- `pio test -e native`: **39/39 PASS** (10 level_switches + 6 sensor_hub + 4 wifi_backoff +
+  13 reading_store + 6 reading_json)
+- `pio run -e esp32-s3-devkitm-1`: **SUCCESS, 0 compiler warnings**; RAM 32.6% (106,692/327,680 B),
+  Flash 29.9% (941,620/3,145,728 B) — up from Phase 4's 29.1%/27.5%
+- `pio check -e esp32-s3-devkitm-1`: PASS; 9 LOW findings — 5 known baseline (link-time stub seam
+  artifacts, unchanged) + 4 new in this phase's `src/sampler.c` (same link-time-stub-seam pattern
+  extended to the sampler's read-seam functions), all `unusedFunction` false positives, no new
+  issue class
+- Verdict: PASS, no phase-relevant failures
+
+**Step 8 — Code Review**
+- Verdict: **APPROVED** — 0 blocking issues, 2 recommended (one already applied: the orphaned
+  `esp_timer.h` include; one deferred as low-priority and currently-unreachable-under-contract: a
+  non-timeout `reading_store_downsample()` error path in `http_api.c` returns a raw `esp_err_t`
+  from the handler, which `esp_http_server` turns into a connection reset rather than a clean 5xx
+  — worth a `send_5xx`-style helper if that branch ever becomes reachable), 1 optional style note
+- Verified explicitly: One Owner Per Peripheral (http_api.c/time_sync.c touch no peripheral),
+  snapshot-then-stream lock discipline (line-level trace of `history_get_handler`), `points`
+  clamping on all four input classes, JSON null-not-zero + structural index-alignment, the
+  `epoch_sec` struct migration (zero size/capacity change, no stale `uptime_sec` references left
+  in code), `time_sync` TZ/tzset application and validity-predicate basis, explicit error handling
+  on every new `esp_err_t`-returning call, `app_main()` reachability for both new modules, and the
+  out-of-scope guard (no pump/relay/interlock/`WDT_PANIC`/D5/D6 touches)
+- Security review: PASS — no injection paths, bounds-checked query parsing, zero new dependencies
+  (SNTP + `esp_http_server` are in-tree ESP-IDF components; `src/idf_component.yml` unchanged)
+
+**Step 9 — Documentation**
+- Inline comments: no additions needed — the TDD agent's header-level module docs and targeted
+  inline rationale comments were already sufficient on review
+- `systemPatterns.md`: status banner updated (39 tests, 32.6%/29.9%); High-Level Architecture
+  diagram marks `http_api.c` and `time_sync.c` BUILT (Phase 5); Pure-Logic/Device-Only Split
+  pattern extended to name `reading_json` as its second instance; § Espressif Platform
+  Conventions → Time & Credentials' SNTP item resolved from an open decision to "implemented in
+  `time_sync.c`" (the adjacent Wi-Fi-credentials-in-NVS item was left untouched, still open);
+  Phase 5 entry added to Recent Architecture Changes; D5/D6 untouched, still open
+- `techContext.md`: status banner updated; § API & Communication documents the three live
+  endpoints (`/`, `/api/now`, `/api/history`); Phase 5 entry added to Recent Technology Changes
+  (SNTP via in-tree `esp_netif_sntp`, no new managed component; two new Kconfig options;
+  `reading_json` lib_deps/test_filter additions)
+- Committed separately (docs-only commit, `95bc5e8`) ahead of this phase's code+test commit —
+  both land on `feature/sensor-monitoring-dashboard` before Phase 6 starts
+
+**Outstanding manual hardware-verification items from Phase 5** (carried forward — no board
+attached in this environment):
+- AC-ERROR-5 fault injection: hold the store mutex from a scratch task for longer than 100 ms,
+  `curl -i http://hydroponics.local/api/history` during that window, confirm `HTTP/1.1 503`
+  rather than a hang, then confirm the next request succeeds normally (injection hook removed
+  before the phase is considered fully closed per the Test Strategy)
+- `curl http://hydroponics.local/api/now` and `/api/history?points=180` return valid,
+  well-formed JSON on real hardware
+- **Phase 5 DRAM re-check**: compare `esp_get_free_heap_size()` against the Phase 1 baseline now
+  that Wi-Fi and the HTTP server are both resident — this is the measurement that actually
+  validates the ~58 KB ring's headroom claim (per M4 in the Plan Critique)
+- SNTP actually completing a real sync against the configured server and
+  `time_sync_is_valid()` flipping true; confirm the configured `HYDRO_SNTP_TZ` default is
+  replaced with the user's real POSIX TZ string before relying on local day/night boundaries
+- Confirming the `esp_http_server` task's default stack comfortably covers the ~10 KB
+  `history_get_handler` snapshot array at runtime (the device build linked and sized cleanly, but
+  stack depth under real execution is not something a clean link proves)
+- **D1 confirmation (carried forward from the post-Phase-4 remediation)**: two consecutive
+  sampler-task cycles logging plausible lux from the sampler task itself (not just the boot
+  read), confirming the I2C-double-acquire fix is durable in practice
+- All previously-carried-forward Phase 1/2/3/4 hardware-verification items remain outstanding
   (unchanged by this phase)
 
 ---
