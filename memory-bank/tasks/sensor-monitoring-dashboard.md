@@ -2,13 +2,14 @@
 slug: sensor-monitoring-dashboard
 legacy_id:
 feature: sensor-monitoring-dashboard
-status: BUILD_COMPLETE
+status: REFLECTION_COMPLETE
 ---
 
 # sensor-monitoring-dashboard: Hydroponic Sensor Monitoring Dashboard
 
 **Complexity**: Level 4
-**Status**: BUILD_COMPLETE
+**Status**: REFLECTION_COMPLETE
+**Reflection**: `memory-bank/reflection/sensor-monitoring-dashboard-reflection.md`
 **Roadmap**: sensor-monitoring-dashboard
 **Branch**: feature/sensor-monitoring-dashboard
 **Worktree**: N/A (primary checkout)
@@ -769,10 +770,21 @@ Phase 6 — web UI:
 
 ## Execution State
 
-**Build Status**: COMPLETE
-**Current Phase**: All 6 phases complete — v1 feature-complete
-**Last Completed**: Phase 6/6 — Web UI — committed to feature/sensor-monitoring-dashboard
-**Can Resume**: NO — all planned phases are complete. Next steps: /bmb:reflect, then /bmb:archive.
+**Build Status**: IDLE
+**Current Phase**: REFLECT → ARCHIVE
+**Last Completed**: REFLECT — `memory-bank/reflection/sensor-monitoring-dashboard-reflection.md`
+**Can Resume**: NO — reflection complete. Next step: /bmb:archive sensor-monitoring-dashboard.
+
+### Completed Steps (REFLECT)
+- Step 1 - Verify Prerequisites: COMPLETE (2026-08-20 14:53 EDT) — all 6 implementation phases `[x]`
+- Step 2 - Load Complexity Context: COMPLETE (2026-08-20 14:53 EDT) — Level 4 reflection rules loaded
+- Step 3 - Reflection Agent: COMPLETE (2026-08-20 14:57 EDT) — Output:
+  `memory-bank/reflection/sensor-monitoring-dashboard-reflection.md`. Orchestrator corrected one
+  telemetry-attribution error in the agent's draft before commit: `by_model`'s Opus 52.2% was read
+  as the build orchestrator running on Opus, but `by_agent` shows `bmb:build-orchestrator-agent` on
+  Sonnet in all 6 dispatches — the Opus share is the interactive main loop. The dependent
+  "re-tier the orchestrator" recommendation was replaced with a telemetry-reporting one.
+- Step 4 - Git Commit: COMPLETE (2026-08-20 14:58 EDT)
 
 ### Guard & Recovery Log
 - Phase 6: commit-guard PASS on first run (no FAIL/recovery needed for the git artifact-integrity
