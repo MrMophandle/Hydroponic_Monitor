@@ -670,10 +670,39 @@ Phase 3 — sampler and store integration:
 Phase 4 — connectivity:
 - [x] `include/wifi_conn.h`, `src/wifi_conn.c` — station mode, backoff reconnect, mDNS
 
-Phase 5 — HTTP API:
+Phase 5 — HTTP API + wall-clock time:
+
+Scope widened 2026-08-20 (see "Phase 5 Scope Change" in Execution State). Phase 5 freezes the
+JSON contract, and a planned pump relay needs *trustworthy local* wall-clock time for day/night
+scheduling — so the timestamp representation must be right before Phase 6 consumes it, not after.
+
 - [ ] `lib/reading_json/include/reading_json.h`, `lib/reading_json/src/reading_json.c`
 - [ ] `test/test_reading_json/test_reading_json.c`
 - [ ] `include/http_api.h`, `src/http_api.c` — `esp_http_server`, chunked streaming
+- [ ] `include/time_sync.h`, `src/time_sync.c` — **new**: SNTP client + `TZ`/`tzset()` for
+      **local** time (day/night is a local-time concept, so UTC alone is insufficient; DST will
+      shift the night boundary twice a year). Exposes a "time is valid" predicate — the device
+      has no battery-backed RTC, so after a power loss with the AP down `time()` returns 1970,
+      and a consumer that schedules an actuator on that is a real-world hazard, not a cosmetic
+      bug. Depends on Phase 4's Wi-Fi.
+- [ ] `src/Kconfig.projbuild` — **extend**: SNTP server + `TZ` string (per
+      "Configuration Is Not Hard-Coded"; a POSIX TZ string is exactly the kind of value that
+      must not be a literal)
+- [ ] `lib/reading_store_core/include/reading_store_core.h` — **extend**: `sensor_reading_t`
+      `uptime_sec` → epoch seconds (same `uint32_t` width — epoch fits to 2106 — so zero RAM
+      change and no ring-capacity change), plus a `time_valid` bit in the existing `valid`
+      bitfield (bits 0-2 used, 5 spare, so this is free now and a struct migration later).
+      Entries recorded before the first SNTP sync must be distinguishable, or the chart plots
+      1970 next to today.
+- [ ] `src/sampler.c` — **extend**: stamp readings with epoch time + the `time_valid` bit
+      instead of `esp_timer_get_time()` uptime
+- [ ] `test/test_reading_store/test_reading_store.c` — **extend**: cover the `time_valid` bit
+      and mixed valid/invalid-time entries through downsampling
+
+**Explicitly NOT in Phase 5** — these belong to the pump-relay feature, which is a separate
+roadmap item (it turns this from a monitor into a control system): relay fail-safe state, the
+`LOW`-level dry-run interlock, `CONFIG_ESP_TASK_WDT_PANIC`, and the D5 Kconfig pin guardrail
+(which escalates from cosmetic to safety-relevant once a GPIO drives a pump).
 
 Phase 6 — web UI:
 - [ ] `src/web/index.html`, `src/web/style.css`, `src/web/app.js`
@@ -697,8 +726,11 @@ Phase 6 — web UI:
       serial-logged IP fallback. `wifi_backoff` pure module extends the Pure-Logic/Device-Only
       Split to connectivity (4 new tests, 31/31 native suite). Device: 29.1% RAM, 27.5% flash,
       0 warnings. `espressif/mdns` added as a managed component.
-- [ ] Phase 5: HTTP API — `/api/now` and `/api/history`, downsampled under the lock into a
-      bounded snapshot then chunk-streamed lock-free
+- [ ] Phase 5: HTTP API + wall-clock time — `/api/now` and `/api/history`, downsampled under the
+      lock into a bounded snapshot then chunk-streamed lock-free; plus SNTP + local-time `TZ`,
+      the `uptime_sec` → epoch timestamp change, and a `time_valid` bit. Scope widened
+      2026-08-20 because this phase freezes the JSON contract and a planned pump relay needs
+      trustworthy local time.
 - [ ] Phase 6: Web UI — embedded page, live values, 24-hour chart, offline/`FAULT` badges
 
 ## Creative Phases
@@ -713,6 +745,35 @@ Phase 6 — web UI:
 **Current Phase**: BUILD (Phase 5 next)
 **Last Completed**: D1–D4 best-practice fixes (post-Phase-4) — committed to feature/sensor-monitoring-dashboard
 **Can Resume**: NO — Phase 4 + the D1–D4 fixes are fully committed; next /bmb:build starts Phase 5 fresh
+
+### Phase 5 Scope Change (2026-08-20, user-approved)
+
+Phase 5 widened from "`/api/now` + `/api/history`" to also cover wall-clock time: SNTP client,
+`TZ`/`tzset()` local time, `sensor_reading_t.uptime_sec` → epoch seconds, and a `time_valid` bit.
+
+**Why now rather than later**: the user confirmed a pump relay is coming, driven by different
+day/night patterns. That makes wall-clock time a *control input*, not chart decoration — it has to
+be trustworthy, and "trustworthy" means local (day/night is local, and DST moves the boundary) and
+explicitly flagged when unsynced (no battery-backed RTC on the WROOM-1, so `time()` is 1970 after
+a power loss with the AP down). Phase 5 is also the phase that freezes the JSON contract, so the
+timestamp representation and the validity flag are single-field changes now and breaking API
+changes once Phase 6 consumes them. Both fit in existing bytes: epoch is the same `uint32_t`
+width, and `valid` has 5 spare bits.
+
+**Considered and rejected**: landing only the struct change in Phase 5 and deferring SNTP to its
+own phase. Defensible — strictly, only the struct must precede the contract freeze — but it would
+ship a `time_valid` bit that is always false and an epoch field nothing populates, i.e. a contract
+that can't be exercised end-to-end. Full fold chosen for that reason.
+
+**Deliberately deferred to the pump-relay feature** (a separate roadmap item — this turns the
+project from a monitor into a control system): relay fail-safe state, the `LOW`-level dry-run
+interlock (highest-value safety requirement, and pure logic, so it fits the existing
+Pure-Logic/Device-Only Split with full host coverage), `CONFIG_ESP_TASK_WDT_PANIC=y` (a hung task
+with an energized pump and no reboot is a flood, which reweights the setting flagged in
+systemPatterns.md), and D5's Kconfig pin guardrail (a bad pin choice currently means a sensor
+doesn't read; with a relay it means the pump's boot-time GPIO state is whatever strapping gives
+you). A DS3231 RTC was raised as the robust answer to the no-RTC problem and would hang off the
+same I2C bus `sampler.c` now owns — not decided.
 
 ### Espressif Best-Practice Fixes D1–D4 (2026-08-20, post-Phase-4)
 
