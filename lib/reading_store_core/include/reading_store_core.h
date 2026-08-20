@@ -1,0 +1,164 @@
+/**
+ * reading_store_core — pure, host-testable ring buffer for sensor readings.
+ *
+ * This module owns ONLY buffer arithmetic: the static sensor_reading_t array,
+ * head/count bookkeeping, wrap-and-overwrite, and downsampling into a
+ * caller-supplied output buffer. It takes NO lock and includes NO FreeRTOS
+ * header — concurrency control is a separate, device-only concern owned by
+ * the `reading_store` wrapper (`lib/reading_store/`, Phase 3). This split
+ * is what lets the buffer arithmetic compile and run in the host-only
+ * [env:native] PlatformIO environment.
+ *
+ * Capacity: 2,880 entries = 24 hours at a 30-second sample interval.
+ */
+#ifndef HYDROPONIC_MONITOR_READING_STORE_CORE_H
+#define HYDROPONIC_MONITOR_READING_STORE_CORE_H
+
+#include <stdint.h>
+
+/* This header itself uses no esp_err_t/ESP_LOG* — it is pure buffer
+ * arithmetic — but it unconditionally pulled in test/native/esp_shim.h
+ * historically, which only exists on the [env:native] include path
+ * (`-I test/native`). Phase 3 is the first phase that forces this header to
+ * compile under the real ESP-IDF device build too (via `reading_store`, the
+ * device-only locking wrapper that delegates to this module), where no file
+ * named "esp_shim.h" exists on the include path at all. Since nothing here
+ * actually needs the shim's contents, the fix is simply to stop including it
+ * under a real ESP-IDF build (`ESP_PLATFORM` is defined by the ESP-IDF build
+ * system) and keep including it under the host-only environment, preserving
+ * existing native-test behavior exactly. */
+#ifndef ESP_PLATFORM
+#include "esp_shim.h"
+#endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/** Number of entries the ring buffer holds: 24h at a 30s sample interval. */
+#define READING_STORE_CORE_CAPACITY 2880
+
+/**
+ * Water-level band. Five-valued by design: the four switch-combination
+ * outcomes (FULL/MID/LOW/FAULT) plus UNKNOWN, the lifecycle state reported
+ * before the first sample has ever completed. This module only needs the
+ * enum to exist so sensor_reading_t compiles — the switch-combination state
+ * machine (debounce, mapping) is a later phase's responsibility, not this
+ * one's.
+ */
+typedef enum {
+    LEVEL_UNKNOWN = 0,
+    LEVEL_FULL,
+    LEVEL_MID,
+    LEVEL_LOW,
+    LEVEL_FAULT,
+} level_state_t;
+
+/**
+ * Validity bits within sensor_reading_t.valid. Bits 0-2 were assigned in
+ * Phase 1-3 (light/temp/level); bit 3 is claimed here (Phase 5) for
+ * time_valid, leaving bits 4-7 spare for future sensors. A failed read (or,
+ * for TIME, a device that has never completed an SNTP sync) is never
+ * represented as a plausible-looking value with its bit still set — the bit
+ * is the source of truth, not the value.
+ */
+#define READING_VALID_LIGHT_BIT ((uint8_t)(1u << 0))
+#define READING_VALID_TEMP_BIT ((uint8_t)(1u << 1))
+#define READING_VALID_LEVEL_BIT ((uint8_t)(1u << 2))
+/** Set once the device has completed at least one successful SNTP sync
+ * (src/time_sync.c). Clear means `epoch_sec` is not trustworthy wall-clock
+ * time — most likely a 1970-anchored epoch from a device with no
+ * battery-backed RTC that has not yet reached an AP, or has reached one but
+ * not yet completed its first sync. Consumers (reading_json, and eventually
+ * a day/night-scheduled pump relay) MUST check this bit before trusting
+ * `epoch_sec` for anything beyond "record order". */
+#define READING_VALID_TIME_BIT ((uint8_t)(1u << 3))
+
+/**
+ * One sample. `valid` is a bitfield of per-sensor (+ time) validity (bit
+ * cleared on a failed read, or on unsynced time); a failed read is never
+ * stored as 0.0 for its value. Approximately 20 bytes.
+ *
+ * `epoch_sec` (Phase 5; was `uptime_sec` in Phases 1-4, holding
+ * `esp_timer_get_time() / 1000000` — device uptime, not a timestamp) now
+ * holds Unix epoch seconds from `time(NULL)`, stamped by the sampler
+ * (src/sampler.c) using wall-clock time from `time_sync` (src/time_sync.c)
+ * once SNTP has synced. Same uint32_t width — epoch seconds fit until 2106 —
+ * so this is a zero-RAM-cost, zero-ring-capacity-cost change. Renamed rather
+ * than kept as `uptime_sec` because the field's *meaning* changed, not just
+ * its value: leaving the old name would silently mislead every future reader
+ * of this struct into assuming it is still relative to boot.
+ */
+typedef struct {
+    uint32_t epoch_sec;
+    float lux;
+    float temp_c;
+    level_state_t level;
+    uint8_t valid;
+} sensor_reading_t;
+
+/** Opaque-in-spirit ring buffer state. Callers allocate this statically. */
+typedef struct {
+    sensor_reading_t entries[READING_STORE_CORE_CAPACITY];
+    uint16_t head;  /* index where the NEXT push will write */
+    uint16_t count; /* number of valid entries currently stored, <= capacity */
+} reading_store_core_t;
+
+/** Initializes (or resets) the ring buffer to empty. */
+void reading_store_core_init(reading_store_core_t *store);
+
+/**
+ * Pushes one reading into the ring. When full, overwrites the oldest entry
+ * (wrap). Never fails and never allocates.
+ */
+void reading_store_core_push(reading_store_core_t *store, const sensor_reading_t *reading);
+
+/** Returns the number of valid entries currently stored (0..capacity). */
+uint16_t reading_store_core_count(const reading_store_core_t *store);
+
+/** True when the store holds zero entries. */
+uint8_t reading_store_core_is_empty(const reading_store_core_t *store);
+
+/** True when the store holds exactly READING_STORE_CORE_CAPACITY entries. */
+uint8_t reading_store_core_is_full(const reading_store_core_t *store);
+
+/**
+ * Fills `out` (caller-supplied, sized for at least `points` entries) with
+ * `points` evenly-spaced samples spanning the store's current content,
+ * oldest to newest. Never allocates and never reads outside the ring.
+ *
+ * - If the store is empty, writes nothing and returns 0.
+ * - If `points` >= the current count, every currently-stored entry is
+ *   written (in order) and the actual number written is returned — this
+ *   function does NOT pad, repeat, or interpolate entries to manufacture
+ *   `points` samples that don't exist.
+ * - Otherwise, `points` evenly-spaced samples are selected across the
+ *   currently-stored range (oldest to newest, inclusive of both ends when
+ *   points > 1).
+ *
+ * `points` is NOT clamped to any maximum here — the caller (the HTTP layer,
+ * in a later phase) is responsible for bounding it before calling.
+ *
+ * PRECONDITION — constant sample period (cross-half contract). "Evenly
+ * spaced" here means evenly spaced **by index**, which is only evenly spaced
+ * **in time** if entries were pushed at a constant period. This module is
+ * pure and cannot enforce that; the writer must. The responsible writer is
+ * the sampler task (`src/sampler.c`), which holds the period constant with
+ * `xTaskDelayUntil()` and logs a warning if a cycle ever overruns the
+ * interval. If a future writer pushes at a variable rate, the samples this
+ * function returns will be unevenly spaced in time and any chart drawn from
+ * them will have a distorted x-axis — at which point entries need to carry
+ * their own timestamps and selection needs to interpolate over time rather
+ * than stride over indices. See systemPatterns.md § Pure-Logic / Device-Only
+ * Split → "the split hides cross-half contracts".
+ *
+ * Returns the number of entries actually written to `out` (0..points).
+ */
+uint16_t reading_store_core_downsample(const reading_store_core_t *store, sensor_reading_t *out,
+                                        uint16_t points);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* HYDROPONIC_MONITOR_READING_STORE_CORE_H */
