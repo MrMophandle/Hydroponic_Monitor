@@ -2,14 +2,17 @@
 
 This file documents the architectural patterns, design patterns, and system structure used in this project. It helps developers understand the system's organization and maintain consistency when extending functionality.
 
-> **Status (2026-08-20)**: Phase 5 of sensor-monitoring-dashboard landed. `lib/reading_json/`
-> (pure JSON serializer), `src/http_api.c` (`esp_http_server` wrapper), and `src/time_sync.c`
-> (SNTP client + local TZ setup) are now **built and tested**. Phases 1–5 complete (39/39 native
-> tests, 32.6% RAM, 29.9% flash). Phase 6 (`web UI`) remains **planned, not yet built**. Do not
-> treat this file as evidence Phase 6 files exist — check `lib/`/`src/` directly.
+> **Status (2026-08-20)**: **ALL 6 PHASES COMPLETE — PROJECT FEATURE-COMPLETE FOR v1.**
+> Phase 6 (web UI) just landed: `src/web/` browser assets + `embed_web_assets.py` build integration,
+> with pure-logic dashboard module (`dashboard-logic.js`) + thin device-only wrapper (`app.js`).
+> The project now has 54 total host-run tests (39 C native + 15 JS via Node), 32.6% RAM,
+> 30.4% flash. Phases 1–6 all locked in firmware: sampler task, HTTP API, JSON serializer,
+> SNTP time sync, Wi-Fi, device drivers, embedded web dashboard. Next phases (v2) would add
+> pump relay control, more sensors, or time-series UI enhancements. Do not modify Phases 1–5;
+> if future changes are needed, they belong in a new Phase 7+ task.
 >
-> Also landed 2026-08-20: an audit of this file against ESP-IDF v5.3.1 best practices, and fixes
-> for deviations **D1–D4** it found (peripheral double-acquisition, `vTaskDelay` pacing, unchecked
+> Landed earlier 2026-08-20: an audit of this file against ESP-IDF v5.3.1 best practices, and
+> fixes for deviations **D1–D4** (peripheral double-acquisition, `vTaskDelay` pacing, unchecked
 > returns). **D5 and D6 remain open** — see § Known Deviations.
 
 ## Guiding Principles
@@ -36,46 +39,54 @@ This file documents the architectural patterns, design patterns, and system stru
 
 ### High-Level Architecture
 ```
-Target shape (Sensor Monitoring, Hydroponic Reservoir) — Phase 1–5 components
-are BUILT. Phase 6 (web UI) is planned but not yet built:
+Sensor Monitoring, Hydroponic Reservoir — ALL 6 PHASES COMPLETE (v1 feature-complete):
 
-┌──────────────────────────────────────────────────────────────┐
-│ Application Layer (src/)                                      │
-│  ┌─────────────────────────────────────────────────────────┐ │
-│  │ app_main()   ← wiring; returns after task launch        │ │
-│  │ sampler.c    ← periodic reading & TWDT subscription     │ │
-│  │ wifi_conn.c  ← station mode, reconnect, mDNS (Phase 4)  │ │
-│  │              ◄─ BUILT (Phase 4)                         │ │
-│  │ time_sync.c  ← SNTP client + local TZ (Phase 5)         │ │
-│  │              ◄─ BUILT (Phase 5)                         │ │
-│  │ http_api.c   ← /api/now, /api/history (Phase 5)         │ │
-│  │              ◄─ BUILT (Phase 5)                         │ │
-│  └─────────────────────────────────────────────────────────┘ │
-└──────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│ Browser Layer (src/web/ + embed_web_assets.py) — Phase 6 BUILT          │
+│  ┌───────────────────────────────────────────────────────────────────┐  │
+│  │ dashboard-logic.js (pure) ◄─── BUILT (Phase 6), Host-testable    │  │
+│  │ ├─ formatReadingTimestamp()    └─ test/web/ (15 Node tests)      │  │
+│  │ ├─ deriveMetricBadge()                                           │  │
+│  │ ├─ deriveLevelBadge()                                            │  │
+│  │ ├─ isPreFirstSample()         app.js (device-only, Phase 6 BUILT)│  │
+│  │ └─ buildChartSeries()         ├─ fetchNow() → /api/now           │  │
+│  │                               ├─ fetchHistory() → /api/history   │  │
+│  │                               └─ Delegates decisions to logic    │  │
+│  │ index.html + style.css embedded via embed_web_assets.py          │  │
+│  └───────────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────────┘
          │
-         ├─────────────┬────────────────┬────────────────┐
-         │             │                │                │
-    ┌────▼──┐  ┌──────▼─┐  ┌───────────▼──┐  ┌────────▼────────┐
-    │reading│  │reading │  │ sensor_hub   │  │ Drivers         │
-    │ _json │  │_store  │  │ (sampler     │  │ (lib/)          │
-    │(pure) │  │(mutex) │──│  failure     │──│ bh1750 (I2C)    │
-    │◄─BUILT│  │◄─BUILT │  │  handling)   │  │ ds18b20 (1-Wire)│
-    │(Phase │  │(Phase  │  │ ◄─ BUILT     │  │ level_switches  │
-    │  5)   │  │  3)    │  │    (Phase 3) │  │ device_status   │
-    └───────┘  └───┬────┘  └──────────────┘  │ ◄─ BUILT        │
-                   │                          │    (Phase 2)    │
-                   │                          └─────────────────┘
-            ┌──────▼─────────────┐
-            │ reading_store_core │  ◄─── BUILT (Phase 1)
-            │ (pure ring buffer, │
-            │  downsample logic; │ ◄─── Host-testable: [env:native]
-            │  NO FreeRTOS)      │
-            │                    │
-            │ • 2,880-entry ring │
-            │ • push/count/is    │
-            │ • downsample to    │
-            │   caller buffer    │
-            └────────────────────┘
+         ├─ GET / → index.html (Phase 6)
+         ├─ GET /style.css, /app.js, /dashboard-logic.js (Phase 6)
+         │
+┌────────▼──────────────────────────────────────────────────────────────┐
+│ Firmware Application Layer (src/)                                     │
+│  ┌──────────────────────────────────────────────────────────────────┐│
+│  │ app_main()   ← wiring; returns after task launch                ││
+│  │ sampler.c    ← periodic reading & TWDT subscription (Phase 3)   ││
+│  │ wifi_conn.c  ← station mode, reconnect, mDNS (Phase 4 BUILT)    ││
+│  │ time_sync.c  ← SNTP client + local TZ (Phase 5 BUILT)           ││
+│  │ http_api.c   ← /api/now, /api/history, / (Phase 5–6 BUILT)      ││
+│  └──────────────────────────────────────────────────────────────────┘│
+└─────────┬──────────────────────────────────────────────────────────────┘
+          │
+          ├─────────────┬────────────────┬────────────────┐
+          │             │                │                │
+    ┌─────▼──┐  ┌──────▼─┐  ┌───────────▼──┐  ┌────────▼─────────┐
+    │reading │  │reading │  │ sensor_hub   │  │ Drivers (lib/)   │
+    │_json   │  │_store  │  │ (sampler     │  │                  │
+    │(pure)  │  │(mutex) │──│  failure     │  │ bh1750 (I2C)     │
+    │ BUILT  │  │ BUILT  │  │  handling)   │  │ ds18b20 (1-Wire) │
+    │Phase 5 │  │Phase 3 │  │ BUILT        │  │ level_switches   │
+    └────────┘  └───┬────┘  │ Phase 3      │  │ device_status    │
+                   │        └──────────────┘  │ BUILT Phase 2    │
+                   │                          └──────────────────┘
+            ┌──────▼──────────────┐
+            │ reading_store_core  │
+            │ (pure ring buffer,  │ BUILT (Phase 1)
+            │  downsample logic;  │ Host-testable: [env:native]
+            │  NO FreeRTOS)       │ 2,880-entry static buffer
+            └─────────────────────┘
 ```
 
 ### Component Responsibilities
@@ -139,13 +150,13 @@ pure half. The pure half lives in `lib/<name>_core/` and is host-compilable; the
   module's correctness depends on a timing, ordering, or units property, state it in the pure
   header as an explicit precondition, and name the device-only module responsible for honoring it.
 
-**When to reuse**: Whenever a module has both pure logic and FreeRTOS coupling:
+**When to reuse**: Whenever a module has both pure logic and device-only coupling (FreeRTOS, I/O, browser DOM):
 - A state machine (pure) with a queue-owned task wrapper (device-only).
 - A JSON serializer (pure) with an HTTP chunked-send wrapper (device-only).
 - A sensor-read-history analyzer (pure) with a sampler-task wrapper (device-only).
+- A dashboard interpretation engine (pure) with DOM/fetch/timer wrapper (browser-device-only). **NEW, Phase 6**: `src/web/dashboard-logic.js` (pure: timestamp formatting, badge derivation, chart series building — zero `document`, `fetch`, `setInterval`, or browser APIs) + `src/web/app.js` (device-only: all DOM wiring, network polls, element updates). The pure half is **host-testable in Node** via `test/web/dashboard-logic.test.mjs` (15 tests, zero npm dependencies); the wrapper is browser-only and verified by manual testing. This is the **first extension of the pattern to the browser layer** and the **third concrete instance** overall (after `reading_store_core`/`reading_store` in Phase 1–3 and `reading_json` in Phase 5).
 
-**Scope**: This pattern is specific to embedded firmware where on-device testing requires hardware
-but off-device testing of logic is feasible.
+**Scope**: This pattern is specific to environments where off-device testing of pure logic is feasible but on-device integration requires coupling to subsystems (FreeRTOS, hardware I/O, or browser APIs) that cannot be easily emulated. It has now proven across three domains: embedded C (ring buffer, JSON serialization, sampler wiring) and browser JavaScript (dashboard interpretation).
 
 ## Integration Patterns
 
@@ -271,7 +282,12 @@ rather than read from NVS. Both are cheapest to change before Phase 5 freezes th
 
 ### Source Language & Default Extensions
 - **Primary language**: C (ESP-IDF) — `.c` for implementation, `.h` for headers
-- **`.cpp`/`.hpp` permitted?**: Not currently. The scaffold is C-only. Introducing C++ requires
+  - **Phase 6 Exceptions (intentional, not drift)**:
+    - `src/web/*.js` — Browser-layer dashboard scripts (Phase 6). JavaScript for client-side dashboard logic.
+    - `embed_web_assets.py` — PlatformIO extra_script at repo root for asset embedding. Python, required by the PlatformIO build system for compiling and embedding static assets (`src/web/*` files).
+    - `test/web/*.mjs` — Node.js ES module test files for dashboard-logic.js (Phase 6). Testable via `node --test` (no npm, zero dependencies).
+  - Both JavaScript and Python additions are scoped to Phase 6 and do not indicate a shift toward polyglot. The device firmware remains C-only (`src/`, `lib/`, `include/`, `test/test_*/`).
+- **`.cpp`/`.hpp` permitted?**: Not currently. The device scaffold is C-only. Introducing C++ requires
   an explicit decision (it changes `idf_component_register` behaviour and linkage; C headers
   consumed from C++ need `extern "C"` guards). Record that decision here if it is made.
 - **Type-checking enforced**: The compiler is the gate — `pio run` must build clean. Treat
@@ -285,11 +301,14 @@ rather than read from NVS. Both are cheapest to change before Phase 5 freezes th
 
 | Directory / Role | Extension | Notes |
 |------------------|-----------|-------|
-| `src/` | `.c` | Application sources; PlatformIO globs `src/*.*` into one IDF component |
+| `src/` (firmware) | `.c` | Application sources; PlatformIO globs `src/*.*` into one IDF component |
+| `src/web/` | `.html`, `.css`, `.js` | Browser assets (Phase 6): embedded into firmware via `embed_web_assets.py` |
 | `include/` | `.h` | Headers shared across `src/` translation units |
 | `lib/<name>/src/` | `.c` | Private library implementation |
 | `lib/<name>/include/` | `.h` | Private library public interface |
-| `test/test_<suite>/` | `.c` | Unity test suites |
+| `test/test_<suite>/` | `.c` | Unity test suites (C, host via `[env:native]`) |
+| `test/web/` | `.mjs` | Node.js ES module test suites (Phase 6): runnable with `node --test` |
+| Root level | `.py` | `embed_web_assets.py` — PlatformIO extra_script for asset embedding (Phase 6) |
 
 ### Module Structure
 - **New driver / subsystem shape**: `lib/<name>/{include/<name>.h, src/<name>.c}` — one library
@@ -376,6 +395,62 @@ To populate this section, run `/bmb:c4`. The command builds a complete bottom-up
 <!-- AUTO-MANAGED: c4-architecture-end -->
 
 ## Recent Architecture Changes
+
+### 2026-08-20 - Phase 6 (FINAL): Web UI Dashboard + Pure-Logic Browser Layer
+- **What Changed**:
+  - **Pure-Logic / Device-Only Split extended to browser**: `src/web/dashboard-logic.js` contains all
+    dashboard interpretation logic (timestamp formatting with SNTP-valid gating, badge derivation,
+    pre-first-sample detection, chart series building) with zero DOM/fetch/timer access, making it
+    host-testable. `src/web/app.js` is the thin device-only wrapper owning all fetch calls,
+    `setInterval`, and element updates, delegating every decision to dashboard-logic. This is the
+    **third concrete instance** of the Pure-Logic/Device-Only Split pattern (after `reading_store_core`/
+    `reading_store` and `reading_json`) and its **first application to the browser layer**.
+  - **Embedded web assets**: Four files embedded in firmware image: `src/web/index.html`, `src/web/style.css`,
+    `src/web/app.js`, `src/web/dashboard-logic.js`. HTTP server now serves real dashboard at `GET /`
+    (was placeholder in Phase 5), plus three new routes: `GET /style.css`, `GET /app.js`,
+    `GET /dashboard-logic.js`. Embedded via `embed_web_assets.py` (PlatformIO extra_script workaround).
+  - **Asset embedding workaround**: Both documented PlatformIO mechanisms (`idf_component_register EMBED_TXTFILES`
+    and `board_build.embed_txtfiles`) failed on `espressif32@6.9.0` + `idf-component-manager 1.x`.
+    Solution: manual invocation of ESP-IDF's `data_file_embed_asm.cmake` + explicit appending to
+    `LINKFLAGS` (read live at link-time, bypassing CMake DAG snapshotting). Full technical writeup
+    in § Web Asset Embedding of techContext.md.
+  - **Code organization exception**: `src/web/` (browser assets), `test/web/` (Node tests), and
+    `embed_web_assets.py` (Python build script) are intentional exceptions to the C-only convention.
+    They are scoped to Phase 6 and do not indicate a polyglot shift — the device firmware (`src/`,
+    `lib/`, `include/`, `test/test_*/`) remains pure C. Recorded in § Code Organization Patterns.
+- **Reason**:
+  - Web UI is the final user-facing component and completes v1 feature set. Embedded assets eliminate
+    external dependencies, reduce round-trips, and make the device fully self-contained (no CDN reliance,
+    single HTTP response delivers the full UI).
+  - Pure-Logic/Device-Only Split on the browser layer enables host-testable dashboard logic without
+    DOM simulators or browser environments — 15 tests run via Node's built-in `--test` runner.
+  - No new user-input surface (reuses `points` param from Phase 5). Zero npm dependencies. Accessibility
+    compliant (state conveyed by text, not color alone).
+- **Trade-offs**:
+  - Asset embedding adds PlatformIO build-system complexity and version lock-in (workaround is
+    specific to `espressif32@6.9.0` + IDF 5.3.1 + idf-component-manager 1.x). If platform is
+    upgraded, re-test whether the documented mechanisms work.
+  - Browser code (JavaScript) is not compiled for type safety; linting/formatting can be added in
+    a future task if needed.
+  - Snapshot-then-stream HTTP response pattern means dashboard snapshot is re-downsampled on every
+    request; acceptable for human-facing dashboard with low polling frequency (~30s), not suitable for
+    high-frequency data fetches.
+- **Affected Components**: 
+  - `src/web/` (new browser layer), `test/web/` (new JS tests), `embed_web_assets.py` (new build script).
+  - `src/http_api.c` extended with four static-asset routes.
+  - No changes to `src/main.c`, `src/sampler.c`, `lib/`, or `test/test_*/` (all Phase 1–5 components locked).
+- **Verified**:
+  - `node --test test/web/` — 15 tests passing (dashboard-logic pure functions).
+  - `pio test -e native` — 39 tests passing (unchanged from Phase 5).
+  - `pio run -e esp32-s3-devkitm-1` — SUCCESS, zero warnings. RAM 32.6% (106,692 B), flash 30.4%
+    (957,040 B).
+  - Clean rebuild (`rm -rf .pio/build && pio run`) verifies asset embedding and symbol linking.
+  - Code review: APPROVED (one BLOCKING round fixed — stale comments claiming `board_build.embed_txtfiles`
+    was working; corrected to document the actual workaround).
+  - Security review: PASS. No new user-input surface, zero new dependencies, no new external integrations.
+- **Scope Lock**: All 6 phases now complete. Phases 1–5 locked in firmware; no further changes to core
+  functionality. Future work (Phase 7+) for v2 would be in a new task (pump relay control, additional
+  sensors, time-series UI enhancements). **Project feature-complete for v1**.
 
 ### 2026-08-20 - Phase 5: HTTP API + Time Sync + JSON Serialization
 - **What Changed**:

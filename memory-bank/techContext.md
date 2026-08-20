@@ -2,12 +2,15 @@
 
 This file documents the technology stack, infrastructure, and tooling used in this project. It serves as a reference for understanding technical decisions and helps maintain consistency across development phases.
 
-> **Status (2026-08-20)**: Phase 5 complete. HTTP API layer (`src/http_api.c`), JSON serializer
-> (`lib/reading_json/`), and time sync (`src/time_sync.c`) implemented and tested. 39/39 native
-> tests passing (`pio test -e native`): 11 reading_store + 10 level_switches + 6 sensor_hub +
-> 4 wifi_backoff + 6 reading_json + 2 reading_store (time_valid tests). Device build
-> (`pio run -e esp32-s3-devkitm-1`): SUCCESS at 32.6% RAM (106,692 B), 29.9% flash (941,620 B);
-> 0 warnings. Code review APPROVED, 0 blocking issues.
+> **Status (2026-08-20)**: **Phase 6 FINAL PHASE complete.** All 6 phases of sensor-monitoring-dashboard
+> now built. Web UI layer (`src/web/` dashboard assets + `embed_web_assets.py` build integration)
+> implemented and tested. 54 total host-run tests: 39 native C tests (`pio test -e native`: 
+> 11 reading_store + 10 level_switches + 6 sensor_hub + 4 wifi_backoff + 6 reading_json + 2 
+> reading_store time_valid) + 15 new JS tests (`node --test test/web/` for dashboard-logic.js).
+> Device build (`pio run -e esp32-s3-devkitm-1`): SUCCESS at 32.6% RAM (106,692 B), 30.4% flash
+> (957,040 B); 0 warnings. Security review PASS (no new user input, zero new dependencies). 
+> Code review APPROVED (comment-only fixes to stale docs in Phase 6, behavior unchanged).
+> **Project feature-complete for v1: all 6 phases locked into firmware image.**
 
 ## Component Structure
 
@@ -80,11 +83,14 @@ pio run --target menuconfig
 
 ### Testing
 ```bash
-# Run logic tests on the host (no hardware required)
+# Run C logic tests on the host (no hardware required)
 pio test -e native
 
-# Verbose host test output
+# Verbose host test output for C tests
 pio test -e native -v
+
+# Run JavaScript tests (dashboard-logic.js pure functions, Phase 6+)
+node --test test/web/
 
 # Run the PlatformIO test suite on-device (ESP32-S3 board must be connected)
 pio test -e esp32-s3-devkitm-1
@@ -183,11 +189,14 @@ The single home for how this project's tests run.
 - **SPIFFS / FATFS**: available in the IDF component set [not yet used]
 
 ### API & Communication
-- **HTTP Server** (`esp_http_server`, Phase 5) — `src/http_api.c` serves three endpoints:
-  - **GET `/`** — Placeholder HTML page (Phase 6 owns the real dashboard)
+- **HTTP Server** (`esp_http_server`, Phase 5–6) — `src/http_api.c` serves six endpoints:
+  - **GET `/`** — Embedded HTML dashboard (real dashboard HTML page, Phase 6; replaces Phase 5 placeholder)
+  - **GET `/style.css`** — Embedded CSS stylesheet (src/web/style.css, Phase 6)
+  - **GET `/app.js`** — Embedded browser application script (src/web/app.js, Phase 6)
+  - **GET `/dashboard-logic.js`** — Embedded pure-logic module (src/web/dashboard-logic.js, Phase 6)
   - **GET `/api/now`** — Single most-recent reading in JSON format (`{"t":<epoch>,"time_valid":<bool>,"lux":<float|null>,"temp_c":<float|null>,"level":"<FULL|MID|LOW|FAULT|UNKNOWN>","valid":{...}}`)
   - **GET `/api/history?points=<N>`** — Parallel arrays of N readings (t, time_valid, lux, temp_c, level), clamped 1–500, default 180
-  - Implementation: snapshot-then-stream pattern with `reading_store_downsample()` acquiring the store lock once, releasing before HTTP chunked-send (no lock held during I/O)
+  - Implementation: snapshot-then-stream pattern with `reading_store_downsample()` acquiring the store lock once, releasing before HTTP chunked-send (no lock held during I/O). Static assets are embedded in the firmware image via `embed_web_assets.py` (see § Web Asset Embedding below)
 
 ### Infrastructure & Deployment
 - **Deployment**: physical flash over USB (`pio run -t upload`)
@@ -239,7 +248,70 @@ After `/bmb:c4` runs, this section will contain pointers to the Container-level 
 
 <!-- AUTO-MANAGED: c4-references-end -->
 
+## Web Asset Embedding (Phase 6 Build System Finding)
+
+### Background: PlatformIO Embed-Txtfiles Mechanisms
+
+PlatformIO documents two mechanisms for embedding text/binary files (HTML, CSS, JS) into the firmware image:
+
+1. **`idf_component_register(... EMBED_TXTFILES ...)`** — ESP-IDF's component-level embedding via CMake. Generates `_binary_<name>_start`/`_end` symbols.
+2. **`board_build.embed_txtfiles`** — PlatformIO's project-level option (platform = espidf).
+
+**Both mechanisms were attempted and failed** on this project's pinned version (`platform = espressif32@6.9.0`, ESP-IDF 5.3.1, idf-component-manager 1.x):
+
+| Mechanism | Failure Mode | Evidence |
+|-----------|--------------|----------|
+| `idf_component_register EMBED_TXTFILES` | "source not found" compile-time error | The IDF CMake custom command runs (generates `.S` assembly), but PlatformIO's espidf integration for non-"main" components never invokes it. |
+| `board_build.embed_txtfiles` | "undefined reference" linker error | Generates the `.S` assembly and registers an ordering dependency, but never compiles the `.S` to an object file or adds it to the link. |
+
+### Solution: Manual ESP-IDF Script Invocation
+
+**File**: `embed_web_assets.py` (PlatformIO extra_script, added to `platformio.ini`)
+
+The workaround manually:
+1. Invokes ESP-IDF's `data_file_embed_asm.cmake` script directly (same script both broken mechanisms use internally)
+2. Compiles the resulting `.S` assembly to an object file (`.o`)
+3. Appends the object file path to `LINKFLAGS` (read live at link-time, not snapshotted by the CMake DAG)
+4. Adds an explicit `env.Depends()` dependency on the firmware ELF to guarantee the object is rebuilt when needed
+
+**Why this approach succeeds where the others fail:**
+- `PIOBUILDFILES` and CMake's DAG are snapshotted at build-configuration time. Objects added to either after that point silently disappear at link time.
+- `LINKFLAGS` is read live by the linker's command-line generator at build-execution time, so appending to it after configuration guarantees the linker sees the path.
+- The explicit dependency ensures SCons correctly orders the build steps.
+
+**Verification**: Clean rebuild (`rm -rf .pio/build && pio run`) links successfully with zero warnings. The `_binary_*` symbols are defined and accessible to `src/http_api.c`.
+
+### Lessons for Future Maintenance
+
+- If `espressif32` platform is upgraded, re-test whether the two documented mechanisms work in the new IDF version. If so, this workaround can be removed.
+- If assets are added/removed, update the `WEB_ASSETS` list in `embed_web_assets.py` and the corresponding `extern` declarations in `include/http_api.h`.
+- The workaround is specific to the `espidf` framework under PlatformIO on this version and is not a portable general-purpose pattern.
+
 ## Recent Technology Changes
+
+### 2026-08-20 - Phase 6 (FINAL): Web UI Dashboard + Embedded Assets
+- **What Changed**:
+  - **Browser-side Pure-Logic / Device-Only Split**: `src/web/dashboard-logic.js` (pure, zero DOM/fetch/timer) handles all interpretation logic: timestamp formatting (with SNTP-valid gating), badge derivation (metric live/offline, level state), pre-first-sample detection, and chart series building. Host-tested in `test/web/dashboard-logic.test.mjs` via Node's built-in `--test` runner (15 tests, zero npm dependencies). `src/web/app.js` owns all DOM wiring, `fetch()` calls, `setInterval()`, and element updates — a thin device-only wrapper that delegates every decision to `DashboardLogic`.
+  - **Embedded Web Assets**: Four static files embedded in firmware image via `embed_web_assets.py` (PlatformIO extra_script): `src/web/index.html`, `src/web/style.css`, `src/web/app.js`, `src/web/dashboard-logic.js`. The HTTP server (`src/http_api.c`) now serves real dashboard at `GET /` (was placeholder in Phase 5) plus three new asset routes: `GET /style.css`, `GET /app.js`, `GET /dashboard-logic.js`. All four assets embedded as `_binary_*_start/_end` symbols (ESP-IDF convention) and linked into firmware image.
+  - **Asset Embedding Workaround**: Neither PlatformIO's documented embed mechanisms (`idf_component_register EMBED_TXTFILES` or `board_build.embed_txtfiles`) worked on `espressif32@6.9.0` with `idf-component-manager 1.x`. Solution: `embed_web_assets.py` manually invokes ESP-IDF's `data_file_embed_asm.cmake` script, compiles the result to object files, and appends them to `LINKFLAGS` (read live at link time, not snapshotted by CMake DAG). See § Web Asset Embedding for full technical writeup and future-maintenance notes.
+  - **No new user-input surface**: Dashboard reuses the same `points` query parameter from Phase 5's `/api/history` route. No new credentials, API keys, or configuration surfaces added.
+  - **Zero npm dependencies**: The 15 new JS tests run via Node's built-in `node --test` (ES modules), no package.json, no `npm install` required. Test file: `test/web/dashboard-logic.test.mjs`.
+  - **Accessibility compliance**: State (level badges, metric badges, timestamps) conveyed by literal text (`FULL`, `MID`, `LOW`, `FAULT`, `live`, `offline`, `UNKNOWN`), never color alone. Per productBrief.md accessibility NFR.
+- **Reason**:
+  - Web UI is the final user-facing component. Pure-Logic/Device-Only Split applied to browser layer enables host-testable dashboard logic without a browser environment or DOM simulator.
+  - Embedded assets mean the device is fully self-contained: no external CSS/JS fetches (no dependency on a CDN), single HTTP response delivers all assets (no round-trips), zero additional flash cost over the 4 KB HTML + 3 KB CSS + 4 KB app.js + 4 KB dashboard-logic.js (total ~15 KB uncompressed in source; embedded overhead minimal).
+  - Asset embedding workaround is a one-time investment specific to this PlatformIO/IDF version combo; documented for future maintenance.
+- **Impact**:
+  - `pio test -e native` unchanged: still 39 C tests (no new C functionality).
+  - `node --test test/web/` new: 15 JS tests for dashboard-logic (pure functions). No CI integration yet; manually invoked with `node --test`.
+  - Device RAM/flash: 32.6% RAM (106,692 B), 30.4% flash (957,040 B); +0.5% flash vs Phase 5 (asset embedding overhead). Total 54 host-run tests across project (39 C + 15 JS).
+  - Device build verified with clean rebuild (`rm -rf .pio/build && pio run`): 0 warnings, link succeeds, symbols accessible to http_api.c.
+  - Code review: one BLOCKING round (stale/self-contradictory comments in CMakeLists.txt and http_api.c claiming `board_build.embed_txtfiles` was the working mechanism when it was actually abandoned). Fixed directly (comment-only, zero behavior change), re-verified build clean. Final verdict: APPROVED.
+  - Security review: PASS. No new user-input surface, zero new dependencies, no new external system integrations.
+- **Migration Notes**:
+  - Fresh checkouts must run `node --test test/web/` to verify new JS tests pass (only requires Node.js; works in CI).
+  - Manual browser verification: `curl http://192.168.x.x/` returns the full HTML dashboard; `curl http://192.168.x.x/api/now | jq` confirms JSON endpoint still works. Open browser to `http://hydroponics.local/` (or IP) to see rendered dashboard polling `/api/now` and `/api/history` every ~30 seconds.
+  - This phase marks **feature-complete for v1**: all 6 phases implemented, tested, and committed. Phases 1–5 remain unchanged and locked. Future work (Phase 7+) for v2 would include pump relay control, more granular time-series options, or additional sensors.
 
 ### 2026-08-20 - Phase 5: SNTP + HTTP Server + JSON Serialization
 - **What Changed**:
