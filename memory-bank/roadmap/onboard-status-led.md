@@ -1,7 +1,8 @@
 ---
 version: next
 status: completed
-bench_verification: partial
+bench_verification: acceptance_criteria_met
+bench_open_items: [ds18b20-rmt-coexistence]
 priority: medium
 complexity: 3
 linked_tasks: [onboard-status-led]
@@ -11,13 +12,14 @@ completed: 2026-08-21
 
 # Onboard Status LED
 
-> **Status: completed — bench verification partial (2026-08-21).** All three phases are built,
-> reviewed, and build-verified; the task `onboard-status-led` is COMPLETE and archived at
-> `memory-bank/archive/onboard-status-led-archive.md`. **All three LED presentation states are
-> confirmed on hardware**: GPIO 48 is the right pin, the GRB byte order is correct, the LED
-> goes red-blinking → green-solid on Wi-Fi association, and fault injection confirmed
-> red-solid holds even with Wi-Fi up — the `http == DOWN` precedence rule verified on real
-> silicon. Two checks remain — see § Bench Verification below.
+> **Status: completed — every acceptance criterion MET on hardware (2026-08-21).** All three
+> phases are built, reviewed, and build-verified; the task `onboard-status-led` is COMPLETE
+> and archived at `memory-bank/archive/onboard-status-led-archive.md`. Three bench sessions
+> closed all 13 ACs: GPIO 48 is the right pin, GRB byte order is correct, all three
+> presentation states render as designed, the `http == DOWN` precedence rule holds on real
+> silicon, and both Wi-Fi transition directions land in ≤20 ms against a 2 s budget. **One
+> non-AC integration check remains** — DS18B20 RMT coexistence, blocked until the temperature
+> probe is installed. See § Bench Verification below.
 
 Drive the ESP32-S3-N16R8's onboard addressable RGB LED (WS2812 on GPIO 48) as a
 firmware reachability indicator, so the device reports its own health without a
@@ -81,15 +83,15 @@ blocking findings, security PASS, 0 new external dependencies.
 
 ## Bench Verification
 
-**Partial — all 3 LED states confirmed on hardware across two bench sessions, 2026-08-21.**
-4 of 6 items fully closed, 1 partial, 1 blocked.
+**All acceptance criteria MET — 2026-08-21, across three bench sessions.** 5 of 6 bench items
+closed; the 6th is blocked on hardware not yet installed.
 
 | # | Check | Result |
 |---|---|---|
 | 1 | **AC-VERIFY-6 (hardware half)** — GPIO 48 vs the vendor-documented 47; GRB byte order | ✅ **GPIO 48 confirmed.** Red rendered red, green rendered green — no channel swap |
 | 2 | **Visual confirmation** of the presentation states | ✅ **3 of 3** — `RED_BLINK`, `GREEN_SOLID`, and `RED_SOLID` all correct |
 | 3 | **AC-ASYNC-1** — illumination at boot, before the blocking sensor read | ✅ Confirmed qualitatively ("on boot"); not stopwatch-measured against the 1 s threshold |
-| 4 | **AC-ASYNC-2** — Wi-Fi transitions reflected within 2 s each way | ⚠️ **Forward only** — association drove `RED_BLINK` → `GREEN_SOLID`. A *drop* returning to `RED_BLINK` was not observed. **A board reset does not count** — it re-inits the fact to `UNKNOWN` rather than driving `UP → DOWN` through the disconnect handler |
+| 4 | **AC-ASYNC-2** — Wi-Fi transitions reflected within 2 s each way | ✅ **Both directions** via forced `esp_wifi_disconnect()`. Drop→LED **20 ms**, recovery→LED **<10 ms**, reproduced twice. `wifi=2` (`DOWN`) confirms the real disconnect handler ran — a board reset would not have exercised it |
 | 5 | **AC-INTEGRATION-1** — injected `http_api_start()` failure → `RED_SOLID` | ✅ **Confirmed** via `max_uri_handlers = 0` injection. `RED_SOLID` observed and **held through Wi-Fi association**, confirming the `http == DOWN` precedence rule empirically |
 | 6 | **RMT coexistence** — DS18B20 1-Wire reads while the LED blinks | ⬜ **Blocked** until the temperature probe is installed. DS18B20 holds an RMT TX+RX pair, the LED holds one RMT TX → 2 of 4 TX, 1 of 4 RX |
 

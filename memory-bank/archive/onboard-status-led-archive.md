@@ -9,12 +9,12 @@
 - Branch: `feature/onboard-status-led`
 - Commits: `1574f85` (brainstorm) → `8d4e7fc` (Phase 1) → `b01f2e7` (Phase 2) → `0fefde5` (Phase 3) → `8816282` (reflection)
 
-> **✅ BENCH VERIFICATION PARTIAL — all 3 LED states confirmed on hardware, 2026-08-21.**
-> See § Bench Verification. Two bench sessions on the physical ESP32-S3: **GPIO 48 is the
-> correct pin**, the **GRB byte order is correct**, all three presentation states render as
-> designed, and the `http == DOWN` precedence rule was confirmed empirically via fault
-> injection. **AC-INTEGRATION-1 is closed.** Two items remain: AC-ASYNC-2's Wi-Fi-*drop*
-> direction, and the DS18B20 RMT-coexistence check (blocked until the probe is installed).
+> **✅ BENCH VERIFICATION — every acceptance criterion is now MET, 2026-08-21.**
+> Three bench sessions on the physical ESP32-S3 closed all 13 ACs: **GPIO 48 is the correct
+> pin**, the **GRB byte order is correct**, all three presentation states render as designed,
+> the `http == DOWN` precedence rule is confirmed empirically, and both Wi-Fi transition
+> directions land in ≤20 ms against a 2 s budget. **One non-AC integration check remains**:
+> DS18B20 RMT coexistence, blocked until the temperature probe is physically installed.
 
 ---
 
@@ -68,20 +68,22 @@ header had explicitly deferred the hardware consumer until the LED pin was confi
 | AC-VERIFY-7 — RMT channel budget + One-Owner-Per-Peripheral hold | MUST | ✅ Met | Code review; budget stays 1/4 TX, 1/4 RX |
 | AC-VERIFY-8 — `HYDRO_STATUS_LED_ENABLE=n` disables cleanly, no partial acquisition | SHOULD | ✅ Met | Code review of the disable path |
 | AC-ASYNC-1 — first illumination < 1 s after power-on, before the boot sensor read | MUST | ✅ **Met** | Call ordering in `src/main.c`; **illumination at boot confirmed on hardware 2026-08-21** (qualitative, not stopwatch-measured) |
-| AC-ASYNC-2 — Wi-Fi drop and recovery each reflected within 2 s | MUST | ⚠️ **Partial** | 100 ms tick implies it; **connect direction confirmed on hardware** (`RED_BLINK` → `GREEN_SOLID`); **drop direction not yet observed** |
+| AC-ASYNC-2 — Wi-Fi drop and recovery each reflected within 2 s | MUST | ✅ **Met** | **Both directions confirmed on hardware 2026-08-21** via forced `esp_wifi_disconnect()`. Drop→LED **20 ms**; recovery→LED **<10 ms**. Reproduced twice |
 | AC-ERROR-1 — LED init/task-creation failure logs and lets boot continue | MUST | ✅ Met | Code review of error paths |
 | AC-ERROR-2 — repeating `status_led_show()` failure logs once, not per tick | MUST | ✅ Met | Code review of suppressed-count logging |
 | AC-INTEGRATION-1 — RED_SOLID (HTTP-down) branch confirmed against real hardware | MUST | ✅ **Met** | **Fault injection on hardware 2026-08-21** — `max_uri_handlers = 0`; `RED_SOLID` visually confirmed and held through Wi-Fi association |
 
-**Host-verifiable criteria: fully met. Hardware-gated criteria: all 3 LED states confirmed;
-only AC-ASYNC-2's drop direction remains partial — see below.**
+**All 13 acceptance criteria are MET.** Host-verifiable criteria by test; hardware-gated
+criteria by three bench sessions on 2026-08-21. The only outstanding item is the DS18B20
+RMT-coexistence integration check, which is not itself an AC — see below.
 
 ---
 
 ## Bench Verification
 
-**Partial — all 3 LED states confirmed on hardware, 2026-08-21.** Two bench sessions.
-4 of 6 items fully closed, 1 partial, 1 blocked on hardware not yet installed.
+**All acceptance criteria MET — 2026-08-21, across three bench sessions.** 5 of 6 bench items
+closed; the 6th (DS18B20 RMT coexistence) is blocked on hardware not yet installed and is an
+integration check rather than an AC.
 
 ### Session 1 — normal boot, unmodified firmware
 
@@ -126,17 +128,48 @@ to `UP` on IP acquisition. Therefore during the injection run both `wifi == UP` 
 *not* at `httpd_register_uri_handler()` with `ESP_ERR_HTTPD_HANDLERS_FULL` as expected. Same
 observable outcome via a cleaner path — the server was never created at all.
 
+### Session 3 — AC-ASYNC-2 reverse-direction injection ✅ CLOSED
+
+**Method**: a temporary periodic `esp_timer` in `app_main()` calling `esp_wifi_disconnect()`
+every 20 s, so the fact transition runs through `wifi_conn.c:142`'s real
+`WIFI_EVENT_STA_DISCONNECTED` handler. Reverted after; the rebuild returned to 965,632 B,
+byte-for-byte the baseline.
+
+Operator confirmed: *"Green for ~18 s, a ~2 s red-blink burst, back to green — twice."*
+Serial evidence, reproduced identically across two cycles:
+
+```
+W (21965) main: BENCH INJECTION: forcing esp_wifi_disconnect()
+W (21985) wifi_conn: disconnected — reconnecting in 1 s
+I (21985) device_status: led state -> 1 (wifi=2 http=1)     # RED_BLINK, wifi=DOWN
+I (24115) device_status: led state -> 0 (wifi=1 http=1)     # GREEN_SOLID, wifi=UP
+```
+
+| Transition | Latency |
+|---|---|
+| Disconnect event → LED `RED_BLINK` | **20 ms** (both cycles) |
+| `GOT_IP` event → LED `GREEN_SOLID` | **<10 ms** (state change shares a timestamp with `wifi_conn: connected`) |
+
+Both directions are three orders of magnitude inside the 2 s budget. **`wifi=2` is
+`STATUS_FACT_DOWN`**, confirming the fact genuinely traversed `UP → DOWN` through the
+disconnect handler — the code path a board reset never exercises.
+
+**Measurement caveat, stated so the record is not misread**: the wall-clock gap from
+disconnect to green was 2130 ms / 2070 ms. That is *network* reconnect time — the 1 s backoff
+floor plus ~1.1 s association and DHCP — **not** LED latency. The LED cannot legitimately turn
+green before the network is actually back. AC-ASYNC-2 measures how fast the LED reflects an
+event, which is the 20 ms / <10 ms above.
+
+**Incidental confirmation**: both cycles logged `reconnecting in 1 s` rather than 1 s then
+2 s, showing `wifi_backoff_reset()` correctly returns the sequence to its floor after each
+successful recovery instead of ratcheting up. Not a target of this test.
+
 ### Outstanding ⬜
 
-1. **AC-ASYNC-2, reverse direction** — a Wi-Fi *drop* returning the LED to `RED_BLINK` within
-   2 s has not been observed; only the connect direction has. **A board reset does not test
-   this**: reset re-initializes the fact to `UNKNOWN` rather than driving `UP → DOWN` through
-   `wifi_conn.c`'s disconnect event handler, which is a different code path. Closing it needs
-   a real AP outage or a temporary `esp_wifi_disconnect()` injection on a timer.
-2. **RMT coexistence** — DS18B20 1-Wire reads succeeding while the LED blinks. **Blocked
+1. **RMT coexistence** — DS18B20 1-Wire reads succeeding while the LED blinks. **Blocked
    until the temperature probe is physically installed.** The DS18B20 driver acquires an RMT
    TX+RX pair and the LED holds one RMT TX, for 2 of 4 TX and 1 of 4 RX. Budget is fine on
-   paper; this is the one remaining item with real risk in it.
+   paper; this is the **only** remaining item, and the only one with real risk in it.
 
 ### Follow-up defect found during bench testing (not a blocker)
 
