@@ -193,6 +193,30 @@ The single home for how this project's tests run.
   - **PSRAM not used**: 8 MB octal PSRAM is present but disabled in software (GPIO 33–37 avoided).
     A 58 KB ring buffer does not need it; disabling avoids configuration faults. Deferred to v2
     if needed for larger history or a GUI.
+  - **Physical header pinout is NOT the reference board's.** The PlatformIO board id is a
+    stand-in; where a GPIO physically emerges is a property of the Hosyond PCB. Trust the
+    board's silkscreen, or confirm empirically — never a reference-board pinout diagram. This
+    board has already been documented wrong once: the onboard status LED is on **GPIO 48**
+    (vendor Q&A), while the vendor's own documentation cites GPIO 47. Bench-confirmed
+    2026-08-21.
+  - **Bench-confirmed pin positions** (add rows as they are verified; a GPIO number matching
+    its header position is coincidence, **not** a general mapping — the 40-pin header cannot
+    map 1:1 onto GPIO numbers reaching 48, and 3V3/GND/EN occupy positions):
+
+    | GPIO | Physical header pin | Confirmed | Method |
+    |------|---------------------|-----------|--------|
+    | 4 (`CONFIG_HYDRO_DS18B20_GPIO`) | pin 4 | 2026-08-21 | 3 s HIGH / 3 s LOW toggle firmware, located with a multimeter |
+
+  - **Pin-finder technique** (for locating any GPIO on this board): temporarily replace
+    `app_main()`'s body with a `gpio_config()` + infinite `gpio_set_level()` loop at 3 s
+    HIGH / 3 s LOW, flash, and probe the header for a pin alternating steady 3.3 V and
+    steady 0 V. Use 3 s rather than sub-second — an averaging multimeter cannot settle on a
+    fast square wave and reports a meaningless mid-scale value (~1.65 V). Run the loop
+    **first** in `app_main()` and never return, so `sampler_sensors_init()` cannot hand the
+    pin to a bus driver mid-test. **The status LED is not a marker for a diagnostic build**:
+    the WS2812 latches its last received frame, so it holds whatever colour production
+    firmware last wrote. Identify the build by flash size instead (~213 KB diagnostic vs
+    ~966 KB production).
 - **Platform**: `espressif32@6.9.0` (ESP-IDF 5.3.1, has `i2c_master` API required by BH1750 driver)
 - **RTOS**: FreeRTOS (bundled with ESP-IDF)
 - **Bootloader / partitioning**: Custom partition table in `partitions.csv` (16 MB flash, no OTA)

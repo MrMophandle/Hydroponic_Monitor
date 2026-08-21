@@ -171,6 +171,24 @@ successful recovery instead of ratcheting up. Not a target of this test.
    TX+RX pair and the LED holds one RMT TX, for 2 of 4 TX and 1 of 4 RX. Budget is fine on
    paper; this is the **only** remaining item, and the only one with real risk in it.
 
+### Design limitation surfaced during bench testing (not a defect)
+
+The WS2812 **latches its last received frame** and holds it until sent a new one or power is
+removed — an ESP32 reset does not clear it. Discovered when a diagnostic build that never
+calls `status_led_show()` left the LED sitting on green from the previous production run.
+
+This exposes a case absent from the design's status vocabulary. The task file records that
+*"dark means powered off or LED failed — read the serial console"*, but **if the tick task
+dies while the board stays powered, the LED freezes on its last frame and looks perfectly
+healthy.** A frozen green is visually indistinguishable from a live green, and unlike "dark"
+there is no cue at all that the indicator has stopped updating.
+
+Not a defect in what shipped — nothing kills the tick task in practice, and the LED is
+explicitly diagnostic rather than safety-critical. But the indicator cannot report its own
+death, which is worth knowing before anyone treats a green LED as proof of liveness. A
+heartbeat (e.g. an imperceptible periodic re-transmit, or a slow breathing modulation on the
+solid states) would close it if that assurance is ever wanted.
+
 ### Follow-up defect found during bench testing (not a blocker)
 
 On the `httpd_register_uri_handler()` failure branch, `http_api_start()` returns the error
