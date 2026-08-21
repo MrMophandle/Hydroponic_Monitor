@@ -71,6 +71,19 @@
     pollStatusEl.className = 'poll-status' + (isStale ? ' stale' : '');
   }
 
+  /* A baseline and left edge so the plot area always reads as a chart, even
+   * when it holds no series. Without this the empty state is a bare message
+   * floating in white space. */
+  function drawFrame(ctx, w, h) {
+    ctx.strokeStyle = '#d1d5db';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(10, 5);
+    ctx.lineTo(10, h - 10);
+    ctx.lineTo(w - 10, h - 10);
+    ctx.stroke();
+  }
+
   function drawChart(series) {
     if (!chartCanvas || !chartCanvas.getContext) {
       return;
@@ -80,10 +93,34 @@
     var h = chartCanvas.height;
     ctx.clearRect(0, 0, w, h);
 
+    /* A canvas cannot expose its pixels to assistive tech, so the chart's
+     * only screen-reader representation is this label. Refreshed on every
+     * draw so it never describes stale data. */
+    chartCanvas.setAttribute('aria-label', window.DashboardLogic.buildChartAriaLabel(series));
+
     var n = series.labels.length;
-    if (n === 0) {
+
+    /* Empty state. Previously this function cleared the canvas and returned,
+     * leaving a blank 900x320 box that looked identical to a failed render —
+     * which is exactly what the bench saw with both sensors unplugged
+     * (2026-08-20). Say so explicitly instead. */
+    if (n === 0 || !window.DashboardLogic.hasPlottableData(series)) {
+      drawFrame(ctx, w, h);
+      ctx.fillStyle = '#6b7280';
+      ctx.font = '14px system-ui, -apple-system, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(
+        n === 0 ? 'no readings recorded yet' : 'no data to plot — sensors offline',
+        w / 2,
+        h / 2
+      );
+      ctx.textAlign = 'start';
+      ctx.textBaseline = 'alphabetic';
       return;
     }
+
+    drawFrame(ctx, w, h);
 
     function plotSeries(values, color) {
       var finite = values.filter(function (v) {

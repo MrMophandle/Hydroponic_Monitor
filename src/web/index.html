@@ -35,7 +35,15 @@
 
   <section class="chart-section">
     <h2>Last 24 Hours</h2>
-    <canvas id="history-chart" width="900" height="320"></canvas>
+    <!-- role="img" + aria-label make the canvas visible to assistive tech at
+         all; without them it did not appear in the accessibility tree. app.js
+         rewrites aria-label on every draw (DashboardLogic.buildChartAriaLabel).
+         The inner text is the pre-script fallback. -->
+    <canvas id="history-chart" width="900" height="320" role="img"
+            aria-label="24-hour history chart. Loading readings.">
+      24-hour history chart. Your browser does not support canvas; the current
+      readings are listed above.
+    </canvas>
     <p class="poll-status" id="poll-status">loading&hellip;</p>
   </section>
 
