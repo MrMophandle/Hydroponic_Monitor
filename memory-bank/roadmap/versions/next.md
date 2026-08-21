@@ -2,6 +2,7 @@
 status: planning
 features:
   - sensor-monitoring-dashboard
+  - onboard-status-led
 ---
 
 # next

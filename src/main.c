@@ -36,6 +36,7 @@
 #include "reading_store.h"
 #include "sampler.h"
 #include "sensor_hub.h"
+#include "status_led_task.h"
 #include "time_sync.h"
 #include "wifi_conn.h"
 
@@ -63,6 +64,18 @@ void app_main(void) {
     /* DRAM baseline for the Phase 5 re-check, an outstanding item carried over
      * from Phase 1 (which could not log it: app_main() was still empty). */
     ESP_LOGI(TAG, "free heap at boot: %" PRIu32 " bytes", esp_get_free_heap_size());
+
+    /* Phase 3 (onboard-status-led): start the LED tick task before the
+     * blocking boot sensor read below (AC-ASYNC-1) — this ordering is
+     * load-bearing, so the LED can illuminate during that read window
+     * rather than only after it. Non-fatal on failure, mirroring the
+     * sampler_start()/http_api_start() failure handling further down this
+     * function: the LED is a status indicator, not a safety-critical path. */
+    esp_err_t status_led_err = status_led_start();
+    if (status_led_err != ESP_OK) {
+        ESP_LOGE(TAG, "status LED FAILED to start (%s) — no visual status indication",
+                 esp_err_to_name(status_led_err));
+    }
 
     /* Single peripheral-acquisition point for the whole firmware. A degraded
      * return is not fatal: each driver is attempted independently, and any
@@ -157,6 +170,8 @@ void app_main(void) {
     esp_err_t http_err = http_api_start();
     if (http_err == ESP_OK) {
         ESP_LOGI(TAG, "HTTP API started");
+        /* Onboard status LED (Phase 2): the http-server-up fact. */
+        status_report_http(STATUS_FACT_UP);
     } else {
         /* Unlike a single sensor going offline, this means the dashboard is
          * entirely unreachable — mirror how sampler_start() failure is
@@ -167,5 +182,9 @@ void app_main(void) {
         ESP_LOGE(TAG, "HTTP API FAILED to start (%s) — dashboard is unreachable",
                  esp_err_to_name(http_err));
         status_set(DEVICE_STATUS_WIFI_DOWN);
+        /* Onboard status LED (Phase 2): the http-server-up fact, reported
+         * alongside (not instead of) the OLD four-state status_set() call
+         * above — unifying the two models is out of scope for this task. */
+        status_report_http(STATUS_FACT_DOWN);
     }
 }
