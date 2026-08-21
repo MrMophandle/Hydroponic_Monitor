@@ -1,13 +1,22 @@
 ---
 version: next
-status: planned
+status: completed
+bench_verification: pending
 priority: medium
 complexity: 3
 linked_tasks: [onboard-status-led]
 created: 2026-08-20
+completed: 2026-08-21
 ---
 
 # Onboard Status LED
+
+> **Status: completed — with bench verification pending.** All three phases are built,
+> reviewed, and build-verified; the task `onboard-status-led` is COMPLETE and archived at
+> `memory-bank/archive/onboard-status-led-archive.md`. A subset of MUST-priority acceptance
+> criteria remain **implemented-but-undemonstrated** because they need a human at the bench —
+> see § Bench Verification Pending below. This feature is closed for development, not for
+> verification.
 
 Drive the ESP32-S3-N16R8's onboard addressable RGB LED (WS2812 on GPIO 48) as a
 firmware reachability indicator, so the device reports its own health without a
@@ -54,3 +63,34 @@ changes behavior, no existing contract moves, and rollback risk is low because t
 LED is diagnostic — nothing in the firmware depends on it. That containment is
 what separates this from the Level 4 `sensor-monitoring-dashboard`, which was
 effectively the entire firmware.
+
+---
+
+## Delivered
+
+| Phase | Commit | Content |
+|---|---|---|
+| 1 | `8d4e7fc` | `lib/status_led_core/` — pure policy core, 24 exhaustive host tests |
+| 2 | `b01f2e7` | `lib/device_status/` extended — two-fact reachability plumbing, 8 host tests |
+| 3 | `0fefde5` | `lib/status_led/` RMT WS2812 driver, `status_led_task` tick task, Kconfig menu |
+
+Native test suite 63 → 71. Device build RAM 32.6%, flash 30.6% → 30.7% (the delta at Phase 3
+confirms the pure core reached the linked image). All three phases: code review APPROVED, 0
+blocking findings, security PASS, 0 new external dependencies.
+
+## Bench Verification Pending
+
+Requires a human with the physical ESP32-S3 board. Not blocking the merge; blocking the
+claim that the LED works.
+
+1. **AC-INTEGRATION-1** — inject an `http_api_start()` failure, confirm `RED_SOLID`
+2. **AC-ASYNC-1 (bench half)** — confirm first illumination under 1 s from power-on
+3. **AC-ASYNC-2 (bench half)** — observe a Wi-Fi drop and recovery reflected within 2 s each way
+4. **AC-VERIFY-6 (hardware half)** — confirm GPIO 48 (not the vendor-documented 47) and that GRB byte order yields the intended colors, not a red/green swap
+5. **RMT coexistence** — confirm DS18B20 1-Wire reads still succeed while the LED is blinking
+6. **Visual confirmation** of all three presentation states
+
+Item 4 is the reason this section exists. As the feature description above notes, the pin
+"stays a Kconfig `choice` with a bench-confirmation step" — that step has not happened, and
+the GPIO rests on vendor Q&A that **contradicts the vendor's own documentation**. If 48 is
+wrong, the `choice` already offers 47 and 38 and no code change is needed.

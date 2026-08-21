@@ -2,13 +2,16 @@
 slug: onboard-status-led
 legacy_id:
 feature: onboard-status-led
-status: REFLECTION_COMPLETE
+status: COMPLETE
 ---
 
 # onboard-status-led: Onboard Status LED
 
 **Complexity**: Level 3
-**Status**: REFLECTION_COMPLETE
+**Status**: COMPLETE
+**Bench Verification**: PENDING — see § Bench Verification Pending in the archive
+**Archived**: memory-bank/archive/onboard-status-led-archive.md
+**Completed**: 2026-08-21
 **Reflection**: memory-bank/reflection/onboard-status-led-reflection.md
 **Roadmap**: onboard-status-led
 **Branch**: feature/onboard-status-led
@@ -526,13 +529,12 @@ were re-run after every spec re-dispatch and after each direct edit — **CLEAN*
 
 ## Execution State
 
-## Reflect Execution State
+## Reflect / Archive Execution State
 
 **Build Status**: IDLE
-**Current Phase**: REFLECT → ARCHIVE
-**Current Step**: Step 5 - Report Completion - COMPLETE
-**Step Started**: 2026-08-21T17:05:00Z
+**Current Phase**: COMPLETE
 **Can Resume**: NO
+**Current Step**: Archived 2026-08-21 — `memory-bank/archive/onboard-status-led-archive.md`
 
 **Task Quality**: Strong / Partial Success (hardware-gated MUST ACs implemented-but-undemonstrated)
 **Ecosystem Effectiveness**: Highly Effective
