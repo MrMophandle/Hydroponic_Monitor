@@ -2,7 +2,7 @@
 
 This file documents the technology stack, infrastructure, and tooling used in this project. It serves as a reference for understanding technical decisions and helps maintain consistency across development phases.
 
-> **Status (2026-08-20)**: **Phase 6 FINAL PHASE complete.** All 6 phases of sensor-monitoring-dashboard
+> **Status (2026-08-20)**: **Phase 6 FINAL PHASE complete (sensor-monitoring-dashboard).** All 6 phases of sensor-monitoring-dashboard
 > now built. Web UI layer (`src/web/` dashboard assets + `embed_web_assets.py` build integration)
 > implemented and tested. 54 total host-run tests: 39 native C tests (`pio test -e native`: 
 > 11 reading_store + 10 level_switches + 6 sensor_hub + 4 wifi_backoff + 6 reading_json + 2 
@@ -11,6 +11,12 @@ This file documents the technology stack, infrastructure, and tooling used in th
 > (957,040 B); 0 warnings. Security review PASS (no new user input, zero new dependencies). 
 > Code review APPROVED (comment-only fixes to stale docs in Phase 6, behavior unchanged).
 > **Project feature-complete for v1: all 6 phases locked into firmware image.**
+>
+> **Status (2026-08-21)**: **onboard-status-led Phase 1 COMPLETE.** New `lib/status_led_core/` 
+> (pure-logic LED state machine, zero FreeRTOS deps) + host tests. Native test count: 63 tests
+> (`pio test -e native`: 11 reading_store + 10 level_switches + 6 sensor_hub + 4 wifi_backoff + 
+> 6 reading_json + 2 reading_store time_valid + 24 status_led_core). Device build unchanged
+> (Phase 1 is additive-only; no calls to new library yet). Code review APPROVED.
 
 ## Component Structure
 

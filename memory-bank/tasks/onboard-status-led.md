@@ -480,7 +480,7 @@ plus host tests, so the NFR path is the honest classification.*
 
 ### Phases
 
-- [ ] Phase 1: Pure policy core + exhaustive host tests (no hardware, no firmware behaviour change)
+- [x] Phase 1: Pure policy core + exhaustive host tests (no hardware, no firmware behaviour change)
 - [ ] Phase 2: Two-fact plumbing, observable on serial (no LED yet)
 - [ ] Phase 3: WS2812 driver, tick task, Kconfig, clean rebuild + bench verification
 
@@ -525,15 +525,47 @@ were re-run after every spec re-dispatch and after each direct edit — **CLEAN*
 
 ## Execution State
 
-**Build Status**: IDLE
-**Current Phase**: BUILD
-**Last Completed**: Planning (via /bmb:brainstorm)
-**Can Resume**: NO
+## Build Execution State
 
-### Active Sub-Agents
-(none)
+**Build Status**: COMPLETE
+**Current Build**: Phase 1: Pure policy core + exhaustive host tests (onboard-status-led)
+**Build Started**: 2026-08-21T14:15:38Z
+**Phase Number**: 1 of 3
+**Is Multi-Phase**: YES
+
+### Current Build Step
+**Step**: Step 11 - Phase Git Completion
+**Status**: COMPLETE
+**Started**: 2026-08-21T14:15:38Z
+**Completed**: 2026-08-21T14:40:00Z
+**Output**: Phase 1 committed and pushed to feature/onboard-status-led
 
 ### Completed Steps
+- Step 0.5 Git Setup: COMPLETE (inline — main checkout already on feature/onboard-status-led, no separate worktree needed)
+- Step 0.6 Phase Gate: COMPLETE (Implementation Roadmap populated; Architecture creative phase complete)
+- Step 1 Read Task Context: COMPLETE (Phase 1 of 3 identified)
+- Step 2 Load Complexity Context: COMPLETE (Level 3)
+- Step 3 TDD Agent: COMPLETE — RED (24 link failures) confirmed before GREEN; 24/24 new tests pass; full native suite 63/63
+- Step 7 Integration Verification (bmb:build-verifier-agent): COMPLETE — tests PASS 63/63, device build PASS (RAM 32.6%, flash 30.6%, unchanged), lint PASS (0 new warnings; 9 pre-existing LOW unrelated to this phase)
+- Step 8 Code Review: COMPLETE — APPROVED, 0 blocking, 1 recommended (forward note for Phase 2/3 flash-delta check), 1 optional (unreachable defensive default case); security PASS (no external input/surface)
+- Step 9 Documentation Agent: COMPLETE — techContext.md native test-count breakdown updated (39→63, +24 status_led_core); systemPatterns.md needed no change (existing Pure-Logic/Device-Only pattern followed exactly)
+- Step 10 Memory Bank Update: COMPLETE — Phase 1 checkbox marked [x], Execution State updated
+
+### Sub-Agents
+- TDD Agent (Sonnet, anthropic backend): COMPLETE — lib/status_led_core/{include,src}, test/test_status_led_core/, platformio.ini test_filter
+- Integration Verifier Agent (Haiku): COMPLETE — verdict PASS across tests/build/lint
+- Code Reviewer Agent (Sonnet): COMPLETE — APPROVED
+- Documentation Agent (Haiku): COMPLETE — techContext.md updated
+
+### Guard & Recovery Log
+(none — commit guard passed on first run)
+
+### Resumption Notes
+**Can Resume**: NO
+**Resume From**: N/A — phase complete
+**Notes**: Phase 1 fully complete and committed. Next /bmb:build invocation should pick up Phase 2: Two-fact plumbing, observable on serial.
+
+### Legacy Completed Steps (pre-build)
 - Brainstorm conversation → design approved by user section-by-section (2026-08-20)
 - Roadmap feature created: `onboard-status-led` (Level 3, inferred — not prompted)
 - Task file authored; `## Specification` delegated to the Spec Writer Agent (Sonnet)
