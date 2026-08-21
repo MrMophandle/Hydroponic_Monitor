@@ -9,12 +9,12 @@
 - Branch: `feature/onboard-status-led`
 - Commits: `1574f85` (brainstorm) → `8d4e7fc` (Phase 1) → `b01f2e7` (Phase 2) → `0fefde5` (Phase 3) → `8816282` (reflection)
 
-> **✅ BENCH VERIFICATION PARTIAL — 4 of 6 confirmed on hardware, 2026-08-21.**
-> See § Bench Verification. First boot on the physical ESP32-S3 confirmed the feature
-> works: **GPIO 48 is the correct pin**, the **GRB byte order is correct**, and the LED
-> went red-blinking → green-solid on Wi-Fi association. Two checks remain outstanding
-> (`RED_SOLID` via an injected HTTP failure; the Wi-Fi-drop direction) and one is blocked
-> on hardware not yet installed (DS18B20 RMT coexistence).
+> **✅ BENCH VERIFICATION PARTIAL — all 3 LED states confirmed on hardware, 2026-08-21.**
+> See § Bench Verification. Two bench sessions on the physical ESP32-S3: **GPIO 48 is the
+> correct pin**, the **GRB byte order is correct**, all three presentation states render as
+> designed, and the `http == DOWN` precedence rule was confirmed empirically via fault
+> injection. **AC-INTEGRATION-1 is closed.** Two items remain: AC-ASYNC-2's Wi-Fi-*drop*
+> direction, and the DS18B20 RMT-coexistence check (blocked until the probe is installed).
 
 ---
 
@@ -71,51 +71,86 @@ header had explicitly deferred the hardware consumer until the LED pin was confi
 | AC-ASYNC-2 — Wi-Fi drop and recovery each reflected within 2 s | MUST | ⚠️ **Partial** | 100 ms tick implies it; **connect direction confirmed on hardware** (`RED_BLINK` → `GREEN_SOLID`); **drop direction not yet observed** |
 | AC-ERROR-1 — LED init/task-creation failure logs and lets boot continue | MUST | ✅ Met | Code review of error paths |
 | AC-ERROR-2 — repeating `status_led_show()` failure logs once, not per tick | MUST | ✅ Met | Code review of suppressed-count logging |
-| AC-INTEGRATION-1 — RED_SOLID (HTTP-down) branch confirmed against real hardware | MUST | ❌ **Not demonstrated** | Requires injected `http_api_start()` failure on the bench |
+| AC-INTEGRATION-1 — RED_SOLID (HTTP-down) branch confirmed against real hardware | MUST | ✅ **Met** | **Fault injection on hardware 2026-08-21** — `max_uri_handlers = 0`; `RED_SOLID` visually confirmed and held through Wi-Fi association |
 
-**Host-verifiable criteria: fully met. Hardware-gated criteria: 4 of 6 now confirmed — see below.**
+**Host-verifiable criteria: fully met. Hardware-gated criteria: all 3 LED states confirmed;
+only AC-ASYNC-2's drop direction remains partial — see below.**
 
 ---
 
 ## Bench Verification
 
-**Partial — 4 of 6 items confirmed on the first hardware boot, 2026-08-21.**
+**Partial — all 3 LED states confirmed on hardware, 2026-08-21.** Two bench sessions.
+4 of 6 items fully closed, 1 partial, 1 blocked on hardware not yet installed.
+
+### Session 1 — normal boot, unmodified firmware
 
 Reported observation: *"LED worked like a charm on boot. Flashed red, went to green when
 Wi-Fi was connected."*
 
-### Confirmed on hardware ✅
-
-1. **AC-VERIFY-6 (hardware half)** — **GPIO 48 is the correct pin.** The vendor Q&A answer was right and the vendor's own documentation (GPIO 47) was wrong.
-2. **GRB byte order is correct** — red rendered as red and green as green. A byte-order error would have swapped the two channels and made the "reachable" state red; it didn't.
-3. **Visual confirmation, 2 of 3 states** — `RED_BLINK` and `GREEN_SOLID` both render as designed.
-4. **AC-ASYNC-1** — illumination present at boot, before the blocking sensor read. This confirms the load-bearing `status_led_start()`-before-`sampler_sensors_init()` ordering in `src/main.c` actually does what it was written to do. Observed qualitatively; not stopwatch-measured against the 1 s threshold.
-5. **AC-ASYNC-2, forward direction** — Wi-Fi association drove `RED_BLINK` → `GREEN_SOLID`.
+1. **AC-VERIFY-6 (hardware half) ✅** — **GPIO 48 is the correct pin.** The vendor Q&A answer was right and the vendor's own documentation (GPIO 47) was wrong.
+2. **GRB byte order is correct ✅** — red rendered as red and green as green. A byte-order error would have swapped the two channels and made the "reachable" state red; it didn't.
+3. **AC-ASYNC-1 ✅** — illumination present at boot, before the blocking sensor read. This confirms the load-bearing `status_led_start()`-before-`sampler_sensors_init()` ordering in `src/main.c` actually does what it was written to do. Observed qualitatively; not stopwatch-measured against the 1 s threshold.
+4. **AC-ASYNC-2, forward direction ✅** — Wi-Fi association drove `RED_BLINK` → `GREEN_SOLID`.
 
 The design intent held on first contact with hardware: the tri-state fact model meant the
 boot window read as "still trying" (red blinking) rather than "needs a reflash" (red solid),
 which is precisely the failure a boolean model would have produced.
 
+### Session 2 — AC-INTEGRATION-1 fault injection ✅ CLOSED
+
+**Method**: `config.max_uri_handlers = 0` added temporarily to `http_api_start()`, built,
+flashed, observed, reverted. The reverted build came back to **965,632 B — byte-for-byte the
+archived baseline**, confirming a clean revert with nothing left behind.
+
+**`RED_SOLID` visually confirmed by the operator.** Serial evidence:
+
+```
+E (1955) http_api: httpd_start failed: ESP_ERR_HTTPD_ALLOC_MEM
+E (1965) main: HTTP API FAILED to start (ESP_ERR_HTTPD_ALLOC_MEM) — dashboard is unreachable
+I (1975) device_status: led state -> 2 (wifi=0 http=2)     # RED_SOLID
+```
+
+Wi-Fi then associated and acquired `172.30.100.220` at t≈3.0 s, and **no further state change
+was logged** — the LED held `RED_SOLID`.
+
+**The precedence rule is now confirmed empirically, not by inference.** The clean-firmware
+reflash logged `led state -> 0 (wifi=1 http=1)` at t≈3.0 s, proving the Wi-Fi fact does flip
+to `UP` on IP acquisition. Therefore during the injection run both `wifi == UP` and
+`http == DOWN` held simultaneously and the derived state still stayed `RED_SOLID` —
+`http == DOWN` genuinely outranks `wifi == UP` on real silicon, exactly as
+`status_led_core.h:64` specifies.
+
+**Injection path differed from the prediction.** The failure surfaced at `httpd_start()` with
+`ESP_ERR_HTTPD_ALLOC_MEM` (`httpd_create` could not allocate a zero-length handler array),
+*not* at `httpd_register_uri_handler()` with `ESP_ERR_HTTPD_HANDLERS_FULL` as expected. Same
+observable outcome via a cleaner path — the server was never created at all.
+
 ### Outstanding ⬜
 
-1. **AC-INTEGRATION-1** — `RED_SOLID` has still never been observed. It is the one state
-   with no hardware evidence at all. Injection method: temporarily set
-   `config.max_uri_handlers = 0` in `http_api_start()` (`src/http_api.c`), flash, observe,
-   then revert. **Do not commit the edit.** Expected signature: red blinking through boot
-   and Wi-Fi association, then **staying red but going solid** instead of turning green —
-   because the `http == DOWN` fact takes precedence over `wifi == UP`.
-2. **AC-ASYNC-2, reverse direction** — a Wi-Fi *drop* returning the LED to `RED_BLINK`
-   within 2 s was not observed; only the connect direction was.
-3. **RMT coexistence** — DS18B20 1-Wire reads succeeding while the LED blinks. **Blocked
+1. **AC-ASYNC-2, reverse direction** — a Wi-Fi *drop* returning the LED to `RED_BLINK` within
+   2 s has not been observed; only the connect direction has. **A board reset does not test
+   this**: reset re-initializes the fact to `UNKNOWN` rather than driving `UP → DOWN` through
+   `wifi_conn.c`'s disconnect event handler, which is a different code path. Closing it needs
+   a real AP outage or a temporary `esp_wifi_disconnect()` injection on a timer.
+2. **RMT coexistence** — DS18B20 1-Wire reads succeeding while the LED blinks. **Blocked
    until the temperature probe is physically installed.** The DS18B20 driver acquires an RMT
    TX+RX pair and the LED holds one RMT TX, for 2 of 4 TX and 1 of 4 RX. Budget is fine on
    paper; this is the one remaining item with real risk in it.
 
+### Follow-up defect found during bench testing (not a blocker)
+
+On the `httpd_register_uri_handler()` failure branch, `http_api_start()` returns the error
+without calling `httpd_stop()`, leaking a running httpd task with a partially-registered
+handler set. Same class as the RMT-leak-on-error-path finding the Phase 3 code review caught
+and fixed. Not exercised by the injection above (which failed earlier, at `httpd_start()`).
+Worth a Level 1 task.
+
 **Process note:** this is the second consecutive feature (after `sensor-monitoring-dashboard`)
 to *close* with undemonstrated hardware-gated criteria — though unlike the first, this one was
-verified within a day of archiving and the record was updated rather than left stale. The
-reflection's High Priority recommendation stands: the workflow needs a first-class
-bench-verification state rather than prose in a task file's notes.
+bench-verified within a day and the record updated rather than left stale. The reflection's
+High Priority recommendation stands: the workflow needs a first-class bench-verification state
+rather than prose in a task file's notes.
 
 ---
 
