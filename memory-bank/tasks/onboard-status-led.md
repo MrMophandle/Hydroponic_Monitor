@@ -481,7 +481,7 @@ plus host tests, so the NFR path is the honest classification.*
 ### Phases
 
 - [x] Phase 1: Pure policy core + exhaustive host tests (no hardware, no firmware behaviour change)
-- [ ] Phase 2: Two-fact plumbing, observable on serial (no LED yet)
+- [x] Phase 2: Two-fact plumbing, observable on serial (no LED yet)
 - [ ] Phase 3: WS2812 driver, tick task, Kconfig, clean rebuild + bench verification
 
 ## Creative Phases
@@ -528,34 +528,34 @@ were re-run after every spec re-dispatch and after each direct edit — **CLEAN*
 ## Build Execution State
 
 **Build Status**: COMPLETE
-**Current Build**: Phase 1: Pure policy core + exhaustive host tests (onboard-status-led)
-**Build Started**: 2026-08-21T14:15:38Z
-**Phase Number**: 1 of 3
+**Current Build**: Phase 2: Two-fact plumbing, observable on serial (onboard-status-led)
+**Build Started**: 2026-08-21T15:05:00Z
+**Phase Number**: 2 of 3
 **Is Multi-Phase**: YES
 
 ### Current Build Step
 **Step**: Step 11 - Phase Git Completion
 **Status**: COMPLETE
-**Started**: 2026-08-21T14:15:38Z
-**Completed**: 2026-08-21T14:40:00Z
-**Output**: Phase 1 committed and pushed to feature/onboard-status-led
+**Started**: 2026-08-21T15:05:00Z
+**Completed**: 2026-08-21T15:50:00Z
+**Output**: Phase 2 committed and pushed to feature/onboard-status-led
 
 ### Completed Steps
 - Step 0.5 Git Setup: COMPLETE (inline — main checkout already on feature/onboard-status-led, no separate worktree needed)
 - Step 0.6 Phase Gate: COMPLETE (Implementation Roadmap populated; Architecture creative phase complete)
-- Step 1 Read Task Context: COMPLETE (Phase 1 of 3 identified)
+- Step 1 Read Task Context: COMPLETE (Phase 2 of 3 identified)
 - Step 2 Load Complexity Context: COMPLETE (Level 3)
-- Step 3 TDD Agent: COMPLETE — RED (24 link failures) confirmed before GREEN; 24/24 new tests pass; full native suite 63/63
-- Step 7 Integration Verification (bmb:build-verifier-agent): COMPLETE — tests PASS 63/63, device build PASS (RAM 32.6%, flash 30.6%, unchanged), lint PASS (0 new warnings; 9 pre-existing LOW unrelated to this phase)
-- Step 8 Code Review: COMPLETE — APPROVED, 0 blocking, 1 recommended (forward note for Phase 2/3 flash-delta check), 1 optional (unreachable defensive default case); security PASS (no external input/surface)
-- Step 9 Documentation Agent: COMPLETE — techContext.md native test-count breakdown updated (39→63, +24 status_led_core); systemPatterns.md needed no change (existing Pure-Logic/Device-Only pattern followed exactly)
-- Step 10 Memory Bank Update: COMPLETE — Phase 1 checkbox marked [x], Execution State updated
+- Step 3 TDD Agent: COMPLETE — RED (8 link failures: undefined status_report_wifi/_http/status_snapshot) confirmed before GREEN; 8/8 new tests pass; full native suite 71/71. device_status.c made host-testable via the ESP_PLATFORM/esp_shim.h conditional-include pattern already proven by lib/sensor_hub (2nd instance of that sub-pattern). src/wifi_conn.c + src/main.c wired additively (device-only, not host-tested, matching existing project convention for those files).
+- Step 7 Integration Verification (bmb:build-verifier-agent): COMPLETE — tests PASS 71/71 (63 baseline + 8 new), device build PASS (RAM 32.6%, flash 30.6%, unchanged), lint PASS (0 new warnings; 9 pre-existing LOW unrelated to this phase)
+- Step 8 Code Review: COMPLETE — APPROVED, 0 blocking, 1 optional (doc-comment note on the shared last-logged-state sentinel's benign race, applied); security PASS (no user input/network-parsing surface touched)
+- Step 9 Documentation Agent: COMPLETE — techContext.md native test-count breakdown updated (63→71, +8 device_status); systemPatterns.md deliberately left unchanged (device_status/sensor_hub's ESP_PLATFORM/esp_shim.h reuse is a distinct technique from the Pure-Logic/Device-Only Split section's module-split pattern; documented in techContext.md instead)
+- Step 10 Memory Bank Update: COMPLETE — Phase 2 checkbox marked [x], Execution State updated
 
 ### Sub-Agents
-- TDD Agent (Sonnet, anthropic backend): COMPLETE — lib/status_led_core/{include,src}, test/test_status_led_core/, platformio.ini test_filter
+- TDD Agent (Sonnet, anthropic backend): COMPLETE — lib/device_status/{include,src} extended, test/test_device_status/ (NEW), src/wifi_conn.c + src/main.c wired, platformio.ini test_filter
 - Integration Verifier Agent (Haiku): COMPLETE — verdict PASS across tests/build/lint
-- Code Reviewer Agent (Sonnet): COMPLETE — APPROVED
-- Documentation Agent (Haiku): COMPLETE — techContext.md updated
+- Code Reviewer Agent (Sonnet): COMPLETE — APPROVED (1 optional finding applied directly by orchestrator: doc-comment on device_status.h's status_report_wifi/_http noting the shared s_last_logged_state race is benign — never a wrong derived LED state, only a possible duplicate/missed log line)
+- Documentation Agent (Haiku): COMPLETE — techContext.md updated; systemPatterns.md explicitly left unchanged with reasoning
 
 ### Guard & Recovery Log
 (none — commit guard passed on first run)
@@ -563,7 +563,7 @@ were re-run after every spec re-dispatch and after each direct edit — **CLEAN*
 ### Resumption Notes
 **Can Resume**: NO
 **Resume From**: N/A — phase complete
-**Notes**: Phase 1 fully complete and committed. Next /bmb:build invocation should pick up Phase 2: Two-fact plumbing, observable on serial.
+**Notes**: Phase 2 fully complete and committed. Next /bmb:build invocation should pick up Phase 3: WS2812 driver, tick task, Kconfig, clean rebuild + bench verification.
 
 ### Legacy Completed Steps (pre-build)
 - Brainstorm conversation → design approved by user section-by-section (2026-08-20)

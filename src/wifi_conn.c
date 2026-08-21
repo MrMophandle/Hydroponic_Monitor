@@ -29,6 +29,7 @@
 
 #include "mdns.h"
 
+#include "device_status.h"
 #include "wifi_backoff.h"
 
 /* AC-ERROR-6: a bare `#include "wifi_secrets.h"` on a missing header would
@@ -136,6 +137,9 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
          * continues untouched (sampler.c has no dependency on this file).
          * We just schedule the next connect attempt on backoff. */
         wifi_conn_schedule_reconnect();
+        /* Onboard status LED (Phase 2): record the wifi fact so the LED
+         * policy sees the disconnect. */
+        status_report_wifi(STATUS_FACT_DOWN);
     }
 }
 
@@ -152,6 +156,9 @@ static void ip_event_handler(void *arg, esp_event_base_t event_base, int32_t eve
      * connection returns ..."). */
     wifi_backoff_reset(&s_backoff);
     wifi_conn_register_mdns();
+    /* Onboard status LED (Phase 2): record the wifi fact so the LED policy
+     * reflects the fresh connection. */
+    status_report_wifi(STATUS_FACT_UP);
 
     ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
     /* AC-ERROR-7: unambiguous, greppable, logged on every connect AND every

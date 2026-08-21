@@ -157,6 +157,8 @@ void app_main(void) {
     esp_err_t http_err = http_api_start();
     if (http_err == ESP_OK) {
         ESP_LOGI(TAG, "HTTP API started");
+        /* Onboard status LED (Phase 2): the http-server-up fact. */
+        status_report_http(STATUS_FACT_UP);
     } else {
         /* Unlike a single sensor going offline, this means the dashboard is
          * entirely unreachable — mirror how sampler_start() failure is
@@ -167,5 +169,9 @@ void app_main(void) {
         ESP_LOGE(TAG, "HTTP API FAILED to start (%s) — dashboard is unreachable",
                  esp_err_to_name(http_err));
         status_set(DEVICE_STATUS_WIFI_DOWN);
+        /* Onboard status LED (Phase 2): the http-server-up fact, reported
+         * alongside (not instead of) the OLD four-state status_set() call
+         * above — unifying the two models is out of scope for this task. */
+        status_report_http(STATUS_FACT_DOWN);
     }
 }

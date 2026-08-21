@@ -12,11 +12,12 @@ This file documents the technology stack, infrastructure, and tooling used in th
 > Code review APPROVED (comment-only fixes to stale docs in Phase 6, behavior unchanged).
 > **Project feature-complete for v1: all 6 phases locked into firmware image.**
 >
-> **Status (2026-08-21)**: **onboard-status-led Phase 1 COMPLETE.** New `lib/status_led_core/` 
-> (pure-logic LED state machine, zero FreeRTOS deps) + host tests. Native test count: 63 tests
+> **Status (2026-08-21)**: **onboard-status-led Phase 2 COMPLETE.** Extended `lib/device_status/` 
+> with reachability-fact tracking (`status_report_wifi()`, `status_report_http()`, `status_snapshot()`) 
+> + host-testable via ESP_PLATFORM/esp_shim.h pattern. Native test count: 71 tests
 > (`pio test -e native`: 11 reading_store + 10 level_switches + 6 sensor_hub + 4 wifi_backoff + 
-> 6 reading_json + 2 reading_store time_valid + 24 status_led_core). Device build unchanged
-> (Phase 1 is additive-only; no calls to new library yet). Code review APPROVED.
+> 6 reading_json + 2 reading_store time_valid + 24 status_led_core + 8 device_status). Device build 
+> unchanged (32.6% RAM, 30.6% flash; Phase 2 is additive-only). Code review APPROVED.
 
 ## Component Structure
 
