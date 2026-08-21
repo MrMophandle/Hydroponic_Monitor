@@ -9,7 +9,7 @@ status: COMPLETE
 
 **Complexity**: Level 3
 **Status**: COMPLETE
-**Bench Verification**: PENDING — see § Bench Verification Pending in the archive
+**Bench Verification**: PARTIAL (2026-08-21) — 4 of 6 items confirmed on hardware; see § Bench Verification in the archive
 **Archived**: memory-bank/archive/onboard-status-led-archive.md
 **Completed**: 2026-08-21
 **Reflection**: memory-bank/reflection/onboard-status-led-reflection.md
@@ -550,7 +550,23 @@ were re-run after every spec re-dispatch and after each direct edit — **CLEAN*
 - Step 4 Git Commit: COMPLETE
 
 ### Open Item Carried to Archive
-**Bench verification still pending** — hardware-gated MUST acceptance criteria (AC-INTEGRATION-1, the bench half of AC-ASYNC-1, GPIO/byte-order confirmation, DS18B20-while-blinking RMT coexistence) are implemented and build-verified but **not demonstrated**. Requires a human with the physical ESP32-S3 board. The reflection flags this as the 2nd consecutive occurrence (after `sensor-monitoring-dashboard`) and raises it as a High Priority ecosystem gap: BMB needs a first-class "bench verification pending" status rather than prose in Resumption Notes.
+**Bench verification PARTIAL (2026-08-21)** — first hardware boot on the physical ESP32-S3
+confirmed 4 of 6 items. Reported observation: *"LED worked like a charm on boot. Flashed red,
+went to green when Wi-Fi was connected."*
+
+**Confirmed on hardware:**
+- `RED_BLINK` and `GREEN_SOLID` both render as intended (visual, 2 of 3 states)
+- **GPIO 48 is correct** — the vendor Q&A answer, not the vendor-documented GPIO 47. The Kconfig `choice` stays as-is; 47/38 are no longer needed.
+- **GRB byte order is correct** — red rendered as red and green as green, so no red/green channel swap
+- **AC-ASYNC-1** — illumination present at boot, before the blocking sensor read. Observed qualitatively ("on boot"), not stopwatch-measured against the 1 s threshold; the load-bearing `status_led_start()`-before-`sampler_sensors_init()` ordering is confirmed working.
+- **AC-ASYNC-2, forward direction only** — Wi-Fi association drove `RED_BLINK` → `GREEN_SOLID`
+
+**Still outstanding:**
+- **AC-INTEGRATION-1** — `RED_SOLID` has never been observed. Needs an injected `http_api_start()` failure (recommended method: temporarily set `config.max_uri_handlers = 0` in `src/http_api.c`, flash, observe, revert — do not commit).
+- **AC-ASYNC-2, reverse direction** — a Wi-Fi *drop* returning the LED to `RED_BLINK` within 2 s was not observed (only the connect direction was)
+- **RMT coexistence** — DS18B20 1-Wire reads succeeding while the LED blinks. Blocked until the temperature probe is physically installed; the DS18B20 holds an RMT TX+RX pair and the LED holds one RMT TX (2 of 4 TX, 1 of 4 RX).
+
+The reflection flags this as the 2nd consecutive occurrence (after `sensor-monitoring-dashboard`) of a task closing with undemonstrated hardware-gated criteria, and raises it as a High Priority ecosystem gap: BMB needs a first-class bench-verification status rather than prose in Resumption Notes.
 
 ---
 
