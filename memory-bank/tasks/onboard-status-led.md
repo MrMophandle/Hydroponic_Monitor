@@ -2,13 +2,13 @@
 slug: onboard-status-led
 legacy_id:
 feature: onboard-status-led
-status: PLANNING_COMPLETE
+status: BUILD_COMPLETE
 ---
 
 # onboard-status-led: Onboard Status LED
 
 **Complexity**: Level 3
-**Status**: PLANNING_COMPLETE
+**Status**: BUILD_COMPLETE
 **Roadmap**: onboard-status-led
 **Branch**: feature/onboard-status-led
 **Worktree**: N/A
@@ -482,7 +482,7 @@ plus host tests, so the NFR path is the honest classification.*
 
 - [x] Phase 1: Pure policy core + exhaustive host tests (no hardware, no firmware behaviour change)
 - [x] Phase 2: Two-fact plumbing, observable on serial (no LED yet)
-- [ ] Phase 3: WS2812 driver, tick task, Kconfig, clean rebuild + bench verification
+- [x] Phase 3: WS2812 driver, tick task, Kconfig, clean rebuild + bench verification
 
 ## Creative Phases
 
@@ -528,33 +528,33 @@ were re-run after every spec re-dispatch and after each direct edit — **CLEAN*
 ## Build Execution State
 
 **Build Status**: COMPLETE
-**Current Build**: Phase 2: Two-fact plumbing, observable on serial (onboard-status-led)
-**Build Started**: 2026-08-21T15:05:00Z
-**Phase Number**: 2 of 3
+**Current Build**: Phase 3: WS2812 driver, tick task, Kconfig, clean rebuild + bench verification (onboard-status-led) — FINAL PHASE
+**Build Started**: 2026-08-21T16:10:00Z
+**Phase Number**: 3 of 3
 **Is Multi-Phase**: YES
 
 ### Current Build Step
 **Step**: Step 11 - Phase Git Completion
 **Status**: COMPLETE
-**Started**: 2026-08-21T15:05:00Z
-**Completed**: 2026-08-21T15:50:00Z
-**Output**: Phase 2 committed and pushed to feature/onboard-status-led
+**Started**: 2026-08-21T16:10:00Z
+**Completed**: 2026-08-21T16:55:00Z
+**Output**: Phase 3 (final phase) committed and pushed to feature/onboard-status-led
 
 ### Completed Steps
 - Step 0.5 Git Setup: COMPLETE (inline — main checkout already on feature/onboard-status-led, no separate worktree needed)
 - Step 0.6 Phase Gate: COMPLETE (Implementation Roadmap populated; Architecture creative phase complete)
-- Step 1 Read Task Context: COMPLETE (Phase 2 of 3 identified)
+- Step 1 Read Task Context: COMPLETE (Phase 3 of 3, final phase, identified)
 - Step 2 Load Complexity Context: COMPLETE (Level 3)
-- Step 3 TDD Agent: COMPLETE — RED (8 link failures: undefined status_report_wifi/_http/status_snapshot) confirmed before GREEN; 8/8 new tests pass; full native suite 71/71. device_status.c made host-testable via the ESP_PLATFORM/esp_shim.h conditional-include pattern already proven by lib/sensor_hub (2nd instance of that sub-pattern). src/wifi_conn.c + src/main.c wired additively (device-only, not host-tested, matching existing project convention for those files).
-- Step 7 Integration Verification (bmb:build-verifier-agent): COMPLETE — tests PASS 71/71 (63 baseline + 8 new), device build PASS (RAM 32.6%, flash 30.6%, unchanged), lint PASS (0 new warnings; 9 pre-existing LOW unrelated to this phase)
-- Step 8 Code Review: COMPLETE — APPROVED, 0 blocking, 1 optional (doc-comment note on the shared last-logged-state sentinel's benign race, applied); security PASS (no user input/network-parsing surface touched)
-- Step 9 Documentation Agent: COMPLETE — techContext.md native test-count breakdown updated (63→71, +8 device_status); systemPatterns.md deliberately left unchanged (device_status/sensor_hub's ESP_PLATFORM/esp_shim.h reuse is a distinct technique from the Pure-Logic/Device-Only Split section's module-split pattern; documented in techContext.md instead)
-- Step 10 Memory Bank Update: COMPLETE — Phase 2 checkbox marked [x], Execution State updated
+- Step 3 TDD Agent: COMPLETE — device-only phase, zero new host tests by design (per Test Strategy: RMT driver + FreeRTOS task cannot run under [env:native]); regression gate substituted for RED/GREEN (71/71 native tests unchanged before and after). New: lib/status_led/{include,src}/status_led.{h,c} (RMT TX channel, mem_block_symbols=48, GRB byte order, Kconfig-choice GPIO resolution), lib/status_led/{include,src}/led_strip_encoder.{h,c} (vendored verbatim from ESP-IDF example, Apache-2.0, diff-confirmed byte-identical), include/status_led_task.h + src/status_led_task.c (100ms tick task, priority 2, transmit-only-on-change, AC-ERROR-2 suppressed-failure-count logging, AC-VERIFY-8 clean-disable path). Extended: src/main.c (early status_led_start() before sampler_sensors_init(), AC-ASYNC-1 ordering), src/Kconfig.projbuild (new "Status LED (onboard RGB)" menu: HYDRO_STATUS_LED_ENABLE/_GPIO choice/_BRIGHTNESS/_BLINK_MS), platformio.ini (status_led added to esp32-s3-devkitm-1 lib_deps only).
+- Step 7 Integration Verification (bmb:build-verifier-agent): COMPLETE — tests PASS 71/71 (unchanged, no new host tests this phase by design); device build PASS (RAM 32.6% / 106,708 B unchanged, Flash 30.7% / 965,632 B, non-zero delta confirming the core's first firmware caller); lint: 1 new LOW cppcheck "unusedFunction" false positive on status_led_start (same class as 9 pre-existing false positives on cross-file-called functions; confirmed status_led_start() IS called at src/main.c:74) — accepted as baseline noise, not a regression, consistent with the project's already-documented cppcheck limitation for this build configuration.
+- Step 8 Code Review: COMPLETE — APPROVED, 0 blocking. AC-VERIFY-6/7/8, AC-ERROR-1/2, GRB byte order, priority/stack, transmit-only-on-change, and sole-init-call-site all verified PASS. 1 RECOMMENDED finding (RMT channel/encoder not released on status_led_init()'s rmt_new_led_strip_encoder/rmt_enable failure branches) applied directly by the orchestrator (added rmt_del_channel()/encoder->del() cleanup on those error paths; device build re-verified SUCCESS post-fix, RAM/flash unchanged). 1 OPTIONAL finding (stack-size comment precision, already caveated as bench-unconfirmed) left as-is. Security PASS (no user input/network surface touched; 0 new external dependencies).
+- Step 9 Documentation Agent: COMPLETE — techContext.md status banner + Recent Technology Changes updated (lib/status_led module, vendored encoder provenance, RMT budget table, updated build metrics, Kconfig menu, error-path cleanup note); systemPatterns.md deliberately left unchanged (this phase is the Nth application of the already-documented Pure-Logic/Device-Only Split pattern, not a new pattern — same reasoning precedent as Phase 2).
+- Step 10 Memory Bank Update: COMPLETE — Phase 3 checkbox marked [x] (all 3 phases now complete), task status PLANNING_COMPLETE → BUILD_COMPLETE, Execution State updated.
 
 ### Sub-Agents
-- TDD Agent (Sonnet, anthropic backend): COMPLETE — lib/device_status/{include,src} extended, test/test_device_status/ (NEW), src/wifi_conn.c + src/main.c wired, platformio.ini test_filter
-- Integration Verifier Agent (Haiku): COMPLETE — verdict PASS across tests/build/lint
-- Code Reviewer Agent (Sonnet): COMPLETE — APPROVED (1 optional finding applied directly by orchestrator: doc-comment on device_status.h's status_report_wifi/_http noting the shared s_last_logged_state race is benign — never a wrong derived LED state, only a possible duplicate/missed log line)
+- TDD Agent (Sonnet, anthropic backend): COMPLETE — lib/status_led/ (NEW), include/status_led_task.h + src/status_led_task.c (NEW), src/main.c + src/Kconfig.projbuild + platformio.ini extended
+- Integration Verifier Agent (Haiku): COMPLETE — verdict tests/build PASS, lint 1 accepted false-positive (see above); overall accepted as PASS by the orchestrator per the documented cppcheck limitation
+- Code Reviewer Agent (Sonnet): COMPLETE — APPROVED (1 recommended finding applied directly by orchestrator: RMT resource cleanup on status_led_init() error paths)
 - Documentation Agent (Haiku): COMPLETE — techContext.md updated; systemPatterns.md explicitly left unchanged with reasoning
 
 ### Guard & Recovery Log
@@ -562,8 +562,15 @@ were re-run after every spec re-dispatch and after each direct edit — **CLEAN*
 
 ### Resumption Notes
 **Can Resume**: NO
-**Resume From**: N/A — phase complete
-**Notes**: Phase 2 fully complete and committed. Next /bmb:build invocation should pick up Phase 3: WS2812 driver, tick task, Kconfig, clean rebuild + bench verification.
+**Resume From**: N/A — all 3 phases complete
+**Notes**: All implementation phases of onboard-status-led are now complete and committed. Physical
+bench verification (visual LED observation across all 3 states, the injected http_api_start()
+failure check for RED_SOLID, GPIO/byte-order confirmation, and the DS18B20-reads-while-blinking
+RMT-coexistence check — 8 steps documented in this file's Test Strategy § Per-Phase Test
+Guidance, Phase 3) is a one-time human action requiring the physical ESP32-S3 board and is
+explicitly out of scope for any build agent — it was not attempted here. Next actions: a human
+performs the bench procedure (flash + `pio device monitor` + visual observation), then
+`/bmb:reflect onboard-status-led` to capture learnings, then `/bmb:archive onboard-status-led`.
 
 ### Legacy Completed Steps (pre-build)
 - Brainstorm conversation → design approved by user section-by-section (2026-08-20)

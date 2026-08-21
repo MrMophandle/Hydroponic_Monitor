@@ -121,4 +121,71 @@ menu "Hydroponic Monitor"
 
     endmenu
 
+    menu "Status LED (onboard RGB)"
+
+        config HYDRO_STATUS_LED_ENABLE
+            bool "Enable the onboard status LED"
+            default y
+            help
+                Drives the board's onboard WS2812 RGB LED to present the
+                device's Wi-Fi/HTTP reachability state (green solid =
+                healthy, red blink = degraded/booting, red solid = HTTP
+                server permanently down). The GPIO this LED sits on rests
+                on vendor Q&A, not a confirmed schematic (see
+                HYDRO_STATUS_LED_GPIO below) — if the onboard LED turns out
+                to be wired differently, absent, or the pin conflicts with
+                another peripheral on a given board revision, disable this
+                to skip RMT peripheral acquisition entirely rather than
+                fail or drive the wrong pin.
+
+        choice HYDRO_STATUS_LED_GPIO
+            prompt "Onboard status LED GPIO"
+            default HYDRO_STATUS_LED_GPIO_48
+            depends on HYDRO_STATUS_LED_ENABLE
+            help
+                Which GPIO drives the onboard WS2812. GPIO 48 is Espressif's
+                own vendor Q&A answer for this Hosyond ESP32-S3-WROOM-1
+                module, but third-party documentation for boards in this
+                family disagrees and cites 47 or 38 instead — this is a
+                genuine, unresolved conflict (not a settled default), which
+                is why this is a choice to pick from at build time rather
+                than a plain int+range GPIO field like the sensor pins
+                above, and why it must still be confirmed at the bench.
+
+            config HYDRO_STATUS_LED_GPIO_48
+                bool "GPIO 48 (Espressif vendor Q&A answer)"
+
+            config HYDRO_STATUS_LED_GPIO_47
+                bool "GPIO 47 (alternate per some third-party docs)"
+
+            config HYDRO_STATUS_LED_GPIO_38
+                bool "GPIO 38 (alternate per some third-party docs)"
+
+        endchoice
+
+        config HYDRO_STATUS_LED_BRIGHTNESS
+            int "LED brightness (0-255)"
+            range 1 255
+            default 32
+            depends on HYDRO_STATUS_LED_ENABLE
+            help
+                Scales every RGB channel before transmit (255 = full
+                brightness). Default 32 (~12%) is dim enough for an
+                always-on indicator sitting a few inches from the eye.
+
+        config HYDRO_STATUS_LED_BLINK_MS
+            int "Blink half-period (ms) for the degraded state"
+            range 100 2000
+            default 500
+            depends on HYDRO_STATUS_LED_ENABLE
+            help
+                Half-period of the RED_BLINK presentation state (degraded /
+                booting). The tick task polls at a fixed 100 ms granularity,
+                and this value is converted to a tick count by integer
+                division (value / 100) — a value that is not a multiple of
+                100 silently rounds down to the nearest 100 ms, it does not
+                round to the nearest or error out.
+
+    endmenu
+
 endmenu

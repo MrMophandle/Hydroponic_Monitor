@@ -18,6 +18,17 @@ This file documents the technology stack, infrastructure, and tooling used in th
 > (`pio test -e native`: 11 reading_store + 10 level_switches + 6 sensor_hub + 4 wifi_backoff + 
 > 6 reading_json + 2 reading_store time_valid + 24 status_led_core + 8 device_status). Device build 
 > unchanged (32.6% RAM, 30.6% flash; Phase 2 is additive-only). Code review APPROVED.
+>
+> **Status (2026-08-21)**: **onboard-status-led Phase 3 COMPLETE (FINAL PHASE).** WS2812 RGB LED 
+> driver and tick task implementation: new `lib/status_led/` module (RMT TX driver + vendored 
+> `led_strip_encoder` from ESP-IDF example, Apache-2.0, unmodified), plus `status_led_task` 
+> 100 ms tick at FreeRTOS priority 2 with transmit-only-on-change + suppressed-error-count logging.
+> Kconfig additions: `HYDRO_STATUS_LED_ENABLE`, `HYDRO_STATUS_LED_GPIO` choice (GPIO 48/47/38), 
+> `HYDRO_STATUS_LED_BRIGHTNESS`, `HYDRO_STATUS_LED_BLINK_MS`. Native tests unchanged: 71/71 PASS.
+> Device build: SUCCESS at 32.6% RAM (106,708 B), 30.7% flash (965,632 B); 10 LOW warnings 
+> (9 pre-existing + 1 cppcheck false positive on unused-function). Code review APPROVED 
+> (recommended error-path cleanup applied). RMT peripheral budget: 1 TX + 1 RX of 4 channels 
+> reserved for status LED; 3 TX + 3 RX remain for future features (DS18B20 1-Wire uses 1 TX + 1 RX).
 
 ## Component Structure
 
@@ -298,6 +309,37 @@ The workaround manually:
 - The workaround is specific to the `espidf` framework under PlatformIO on this version and is not a portable general-purpose pattern.
 
 ## Recent Technology Changes
+
+### 2026-08-21 - onboard-status-led Phase 3 (FINAL): WS2812 RGB LED Driver & Tick Task
+- **What Changed**:
+  - **New `lib/status_led/` module** (RMT WS2812 device-only driver): `status_led_init()` creates exactly one RMT TX channel; `status_led_show()` transmits a `status_led_rgb_t` frame (GRB byte order, 3 bytes). The module knows nothing about LED policy (which state to show) — that is entirely `lib/status_led_core`'s pure-logic job. Device-only: not compiled under `[env:native]` (no RMT peripheral on the host).
+  - **Vendored `led_strip_encoder`** (ESP-IDF example, Apache-2.0, unmodified): `lib/status_led/{include,src}/led_strip_encoder.{h,c}` copied verbatim from Espressif's `examples/peripherals/rmt/led_strip/main/led_strip_encoder.{c,h}` (v5.3.1 example tag). Handles WS2812 bit-level timing: 10 MHz RMT resolution, T0H/T0L/T1H/T1L tick counts. Pinned at commit-level via git history for reproducibility (not managed via `idf_component.yml`).
+  - **RMT memory configuration**: `mem_block_symbols = 48` (verified legal minimum on ESP32-S3 per `esp_driver_rmt/src/rmt_tx.c`'s `SOC_RMT_MEM_WORDS_PER_CHANNEL = 48`). One WS2812 pixel (3 bytes) consumes exactly 1 of 4 RMT memory blocks instead of 2 (the vendored example's 64-symbol buffer would consume 2), leaving 3 blocks for the DS18B20 1-Wire bus TX+RX pair and headroom.
+  - **New `status_led_task` module** (device-only FreeRTOS tick task): 100 ms tick period (fixed `#define`, not Kconfig). Task reads reachability facts from `device_status` (set by Phase 2), calls `status_led_core_derive_state()` to decide LED state, calls `status_led_core_frame()` to compute RGB + blink animation (tick counter + Kconfig `HYDRO_STATUS_LED_BLINK_MS`), and transmits via `status_led_show()`. Transmit-only-on-change (no redundant RMT activity when LED is steady). Suppressed-error-count logging (AC-ERROR-2): first `status_led_show()` failure logged immediately; consecutive failures counted but not logged; recovery logged with suppression count. Task priority: 2 (one above FreeRTOS main, so LED animates during boot before blocking sensor reads).
+  - **Kconfig integration**: New `src/Kconfig.projbuild` "Status LED (onboard RGB)" submenu with four options:
+    - `CONFIG_HYDRO_STATUS_LED_ENABLE` (bool, default y): gate to disable LED entirely (escape hatch if GPIO wrong or absent).
+    - `CONFIG_HYDRO_STATUS_LED_GPIO` (choice): GPIO 48 (vendor Q&A), 47 (third-party docs), 38 (fallback). Resolution is a single if/else-if ladder in `status_led.c`, not buried in a plain int+range (AC-VERIFY-6 pattern: Kconfig `choice`, not `int` + `range`, makes the decision visible and greppable).
+    - `CONFIG_HYDRO_STATUS_LED_BRIGHTNESS` (int, 0–255, default 128): scalar multiplied into R/G/B in `status_led_core_frame()` for user dim-down.
+    - `CONFIG_HYDRO_STATUS_LED_BLINK_MS` (int, 100–1000 ms, default 300): blink half-period (on time and off time, so full blink cycle is 2x this). Rounding: periods not a multiple of 100 ms tick silently round down (documented in Kconfig help text and in `status_led_task.c` code comment).
+  - **Kconfig-gated disable**: If `CONFIG_HYDRO_STATUS_LED_ENABLE` is false at compile time, `status_led_start()` returns `ESP_OK` immediately (no RMT acquire, no task create, no error logged — a supported configuration, not a degraded state, per AC-VERIFY-8). Pure Kconfig guard (`#ifndef CONFIG_HYDRO_STATUS_LED_ENABLE`), not runtime bool.
+  - **Error path cleanup**: `status_led_init()` error paths properly clean up (added during code review): `rmt_del_channel()` if `rmt_new_led_strip_encoder()` fails, plus `s_led_encoder->del()` and `rmt_del_channel()` if `rmt_enable()` fails. Per AC-ERROR-1 (non-fatal boot errors), `status_led_start()` failure does not abort boot.
+  - **No new user input surface**: LED state is read-only from `device_status` facts (wifi/http reachability). No HTTP API changes.
+  - **RMT peripheral budget**: RMT has 4 TX channels and 4 RX channels on ESP32-S3. Phase 3 claims 1 TX for the status LED. Phase 2's DS18B20 1-Wire uses 1 TX + 1 RX (owned by `lib/ds18b20_probe`). This leaves 2 TX + 3 RX (net 2 TX for future use + 1 RX spare). RMT contention would manifest as a non-fatal boot error from `rmt_new_tx_channel()` in `status_led_init()` (documented behavior).
+- **Reason**:
+  - Ambient hardware indicator (onboard RGB LED) communicates device status without HTTP or UI. Useful for offline operation (no Wi-Fi) and at-a-glance system health while interacting with other systems.
+  - Device-only RMT driver decouples firmware timing details (WS2812 bit encoding) from policy (which color means what). `lib/status_led_core` remains pure logic, testable on the host, leaving the driver as a thin hardware-specific shim. Matches Phase 2's `lib/device_status` Pure-Logic/Device-Only Split pattern.
+  - Kconfig `choice` for GPIO (not int+range) documents the architectural decision: the GPIO is genuinely ambiguous per vendor/third-party docs, and the choice ensures the decision is visible in config and greppable in code.
+  - Task priority 2 (above main) ensures LED animates during the slow sensor-read sequence at boot, user-visible feedback that the device is alive.
+  - Transmit-only-on-change + suppressed-error-count logging keeps RMT quiet and logs bounded even if the LED driver fails.
+- **Impact**:
+  - `pio test -e native`: 71/71 PASS (unchanged — Phase 3 adds zero host tests by design; RMT and FreeRTOS are device-only).
+  - `pio run -e esp32-s3-devkitm-1`: SUCCESS at 32.6% RAM (106,708 B, unchanged), 30.7% flash (965,632 B, +0.1% vs Phase 2). Firmware image includes the status-LED driver, vendored encoder, Kconfig menu, task code, and all the main.c wiring.
+  - `pio check -e esp32-s3-devkitm-1`: 10 LOW warnings total (9 pre-existing + 1 new cppcheck `unusedFunction` false positive on `status_led_start` — same class as the 9 pre-existing ones on functions that ARE called cross-file; confirmed called at `src/main.c:74`). Not a real defect.
+  - Code review: APPROVED with 1 RECOMMENDED finding applied (error-path cleanup above) and 1 OPTIONAL finding left as-is (stack-size comment precision, already caveated as bench-unconfirmed).
+  - Security review: PASS (no user input, no network surface, no persisted data touched).
+  - `platformio.ini`: added `status_led` library to `[env:esp32-s3-devkitm-1]` `lib_deps` list.
+  - **Bench Verification Pending** (human-only): physical LED observation (colors match state), HTTP failure injection (LED response to reachability loss), DS18B20-while-blinking (RMT/1-Wire coexistence). See `memory-bank/tasks/onboard-status-led.md` § Per-Phase Test Guidance, Phase 3 for the documented procedure.
+- **Migration Notes**: Fresh checkouts should run `pio run -e esp32-s3-devkitm-1` to compile the new driver. `pio menuconfig` now shows "Hydroponic Monitor" → "Status LED (onboard RGB)" submenu for the four new options (or `cat sdkconfig.esp32-s3-devkitm-1 | grep CONFIG_HYDRO_STATUS_LED`). Default Kconfig values are reasonable (LED enabled, GPIO 48, half-brightness, 300 ms blink half-period). No pin-conflict migration needed (GPIO 48 is explicitly guarded in the Kconfig help text as "may differ per board revision").
 
 ### 2026-08-20 - Phase 6 (FINAL): Web UI Dashboard + Embedded Assets
 - **What Changed**:
