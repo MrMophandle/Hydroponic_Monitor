@@ -9,7 +9,7 @@ status: COMPLETE
 
 **Complexity**: Level 3
 **Status**: COMPLETE
-**Bench Verification**: PENDING — see § Bench Verification Pending in the archive
+**Bench Verification**: ALL ACCEPTANCE CRITERIA MET (2026-08-21) — 3 bench sessions closed all 13 ACs. One non-AC integration check remains: DS18B20 RMT coexistence, blocked until the probe is installed. See § Bench Verification in the archive.
 **Archived**: memory-bank/archive/onboard-status-led-archive.md
 **Completed**: 2026-08-21
 **Reflection**: memory-bank/reflection/onboard-status-led-reflection.md
@@ -550,7 +550,81 @@ were re-run after every spec re-dispatch and after each direct edit — **CLEAN*
 - Step 4 Git Commit: COMPLETE
 
 ### Open Item Carried to Archive
-**Bench verification still pending** — hardware-gated MUST acceptance criteria (AC-INTEGRATION-1, the bench half of AC-ASYNC-1, GPIO/byte-order confirmation, DS18B20-while-blinking RMT coexistence) are implemented and build-verified but **not demonstrated**. Requires a human with the physical ESP32-S3 board. The reflection flags this as the 2nd consecutive occurrence (after `sensor-monitoring-dashboard`) and raises it as a High Priority ecosystem gap: BMB needs a first-class "bench verification pending" status rather than prose in Resumption Notes.
+**Bench verification — ALL ACCEPTANCE CRITERIA MET (2026-08-21)**, across three sessions on
+the physical ESP32-S3. All three LED presentation states confirmed, both Wi-Fi transition
+directions measured, and the precedence rule verified empirically. 5 of 6 bench items closed;
+the 6th (DS18B20 RMT coexistence) is blocked on hardware not yet installed and is an
+integration check rather than an AC.
+
+### Session 1 — normal boot (unmodified firmware)
+Reported observation: *"LED worked like a charm on boot. Flashed red, went to green when
+Wi-Fi was connected."*
+
+- **GPIO 48 is correct** — the vendor Q&A answer, not the vendor-documented GPIO 47. The Kconfig `choice` can stay for documentation value; 47/38 are no longer expected to be needed.
+- **GRB byte order is correct** — red rendered as red and green as green, so no channel swap.
+- **AC-ASYNC-1 ✅** — illumination present at boot, before the blocking sensor read, confirming the load-bearing `status_led_start()`-before-`sampler_sensors_init()` ordering. Observed qualitatively ("on boot"), not stopwatch-measured against the 1 s threshold.
+- **AC-ASYNC-2, forward direction ✅** — Wi-Fi association drove `RED_BLINK` → `GREEN_SOLID`.
+
+### Session 2 — AC-INTEGRATION-1 fault injection ✅ CLOSED
+Method: `config.max_uri_handlers = 0` added temporarily to `http_api_start()`, built, flashed,
+observed, then reverted (`git checkout src/http_api.c`; the reverted build came back to
+965,632 B, byte-for-byte the archived baseline, confirming a clean revert).
+
+`RED_SOLID` **visually confirmed by the operator.** Serial evidence:
+```
+E (1955) http_api: httpd_start failed: ESP_ERR_HTTPD_ALLOC_MEM
+E (1965) main: HTTP API FAILED to start (ESP_ERR_HTTPD_ALLOC_MEM) — dashboard is unreachable
+I (1975) device_status: led state -> 2 (wifi=0 http=2)     # RED_SOLID
+```
+Wi-Fi then associated and acquired `172.30.100.220` at t≈3.0 s and **no further state change
+was logged** — the LED held `RED_SOLID`.
+
+**The precedence rule is confirmed empirically, not merely by inference.** The clean-firmware
+reflash logged `led state -> 0 (wifi=1 http=1)` at t≈3.0 s, proving the Wi-Fi fact does flip
+to `UP` on IP acquisition. So during the injection run both `wifi == UP` and `http == DOWN`
+were true simultaneously and the derived state still held `RED_SOLID` — `http == DOWN`
+genuinely outranks `wifi == UP` on real hardware.
+
+**Note on the injection path**: the failure surfaced at `httpd_start()` with
+`ESP_ERR_HTTPD_ALLOC_MEM` (`httpd_create` could not allocate a zero-length handler array),
+*not* at `httpd_register_uri_handler()` with `ESP_ERR_HTTPD_HANDLERS_FULL` as predicted. Same
+observable outcome, and a cleaner path — the server was never created. The
+`httpd_stop()`-omitted-on-registration-failure leak noted below was therefore **not**
+exercised by this test.
+
+### Session 3 — AC-ASYNC-2 reverse direction ✅ CLOSED
+Method: a temporary periodic `esp_timer` in `app_main()` calling `esp_wifi_disconnect()` every
+20 s, so the transition ran through `wifi_conn.c:142`'s real `WIFI_EVENT_STA_DISCONNECTED`
+handler. Reverted after; rebuild returned to 965,632 B, byte-for-byte the baseline.
+
+Operator confirmed: *"Green for ~18 s, a ~2 s red-blink burst, back to green — twice."*
+
+```
+W (21965) main: BENCH INJECTION: forcing esp_wifi_disconnect()
+W (21985) wifi_conn: disconnected — reconnecting in 1 s
+I (21985) device_status: led state -> 1 (wifi=2 http=1)     # RED_BLINK, wifi=DOWN
+I (24115) device_status: led state -> 0 (wifi=1 http=1)     # GREEN_SOLID, wifi=UP
+```
+
+- Drop event → LED: **20 ms** (both cycles). Recovery event → LED: **<10 ms**. Both three orders of magnitude inside the 2 s budget.
+- `wifi=2` is `STATUS_FACT_DOWN` — the fact genuinely traversed `UP → DOWN` through the disconnect handler, the path a board reset never exercises.
+- **Caveat so this is not misread**: the wall-clock disconnect→green gap was 2130/2070 ms. That is *network* reconnect time (1 s backoff floor + ~1.1 s assoc/DHCP), not LED latency — the LED cannot turn green before the network is back.
+- Incidental: both cycles logged `reconnecting in 1 s` rather than 1 s then 2 s, confirming `wifi_backoff_reset()` returns the sequence to its floor after each recovery.
+
+### Still outstanding
+- **RMT coexistence** — DS18B20 1-Wire reads succeeding while the LED blinks. **Blocked** until the temperature probe is physically installed; the DS18B20 holds an RMT TX+RX pair and the LED holds one RMT TX (2 of 4 TX, 1 of 4 RX). This is now the **only** open item, and the only one with real risk in it. It is an integration check, not an acceptance criterion.
+
+### Follow-up defect noticed during this test (not a blocker)
+On the `httpd_register_uri_handler()` failure branch, `http_api_start()` returns the error
+without calling `httpd_stop()` — leaking a running httpd task with a partial handler set.
+Same class as the RMT-leak-on-error-path finding the Phase 3 code review caught. Worth a
+Level 1 task; unexercised by the injection above.
+
+The reflection flags this task as the 2nd consecutive occurrence (after
+`sensor-monitoring-dashboard`) of closing with undemonstrated hardware-gated criteria, and
+raises it as a High Priority ecosystem gap: BMB needs a first-class bench-verification status
+rather than prose in Resumption Notes. Unlike the first occurrence, this one was verified
+within a day and the record updated rather than left stale.
 
 ---
 

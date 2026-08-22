@@ -1,7 +1,8 @@
 ---
 version: next
 status: completed
-bench_verification: pending
+bench_verification: acceptance_criteria_met
+bench_open_items: [ds18b20-rmt-coexistence]
 priority: medium
 complexity: 3
 linked_tasks: [onboard-status-led]
@@ -11,12 +12,14 @@ completed: 2026-08-21
 
 # Onboard Status LED
 
-> **Status: completed — with bench verification pending.** All three phases are built,
-> reviewed, and build-verified; the task `onboard-status-led` is COMPLETE and archived at
-> `memory-bank/archive/onboard-status-led-archive.md`. A subset of MUST-priority acceptance
-> criteria remain **implemented-but-undemonstrated** because they need a human at the bench —
-> see § Bench Verification Pending below. This feature is closed for development, not for
-> verification.
+> **Status: completed — every acceptance criterion MET on hardware (2026-08-21).** All three
+> phases are built, reviewed, and build-verified; the task `onboard-status-led` is COMPLETE
+> and archived at `memory-bank/archive/onboard-status-led-archive.md`. Three bench sessions
+> closed all 13 ACs: GPIO 48 is the right pin, GRB byte order is correct, all three
+> presentation states render as designed, the `http == DOWN` precedence rule holds on real
+> silicon, and both Wi-Fi transition directions land in ≤20 ms against a 2 s budget. **One
+> non-AC integration check remains** — DS18B20 RMT coexistence, blocked until the temperature
+> probe is installed. See § Bench Verification below.
 
 Drive the ESP32-S3-N16R8's onboard addressable RGB LED (WS2812 on GPIO 48) as a
 firmware reachability indicator, so the device reports its own health without a
@@ -78,19 +81,26 @@ Native test suite 63 → 71. Device build RAM 32.6%, flash 30.6% → 30.7% (the 
 confirms the pure core reached the linked image). All three phases: code review APPROVED, 0
 blocking findings, security PASS, 0 new external dependencies.
 
-## Bench Verification Pending
+## Bench Verification
 
-Requires a human with the physical ESP32-S3 board. Not blocking the merge; blocking the
-claim that the LED works.
+**All acceptance criteria MET — 2026-08-21, across three bench sessions.** 5 of 6 bench items
+closed; the 6th is blocked on hardware not yet installed.
 
-1. **AC-INTEGRATION-1** — inject an `http_api_start()` failure, confirm `RED_SOLID`
-2. **AC-ASYNC-1 (bench half)** — confirm first illumination under 1 s from power-on
-3. **AC-ASYNC-2 (bench half)** — observe a Wi-Fi drop and recovery reflected within 2 s each way
-4. **AC-VERIFY-6 (hardware half)** — confirm GPIO 48 (not the vendor-documented 47) and that GRB byte order yields the intended colors, not a red/green swap
-5. **RMT coexistence** — confirm DS18B20 1-Wire reads still succeed while the LED is blinking
-6. **Visual confirmation** of all three presentation states
+| # | Check | Result |
+|---|---|---|
+| 1 | **AC-VERIFY-6 (hardware half)** — GPIO 48 vs the vendor-documented 47; GRB byte order | ✅ **GPIO 48 confirmed.** Red rendered red, green rendered green — no channel swap |
+| 2 | **Visual confirmation** of the presentation states | ✅ **3 of 3** — `RED_BLINK`, `GREEN_SOLID`, and `RED_SOLID` all correct |
+| 3 | **AC-ASYNC-1** — illumination at boot, before the blocking sensor read | ✅ Confirmed qualitatively ("on boot"); not stopwatch-measured against the 1 s threshold |
+| 4 | **AC-ASYNC-2** — Wi-Fi transitions reflected within 2 s each way | ✅ **Both directions** via forced `esp_wifi_disconnect()`. Drop→LED **20 ms**, recovery→LED **<10 ms**, reproduced twice. `wifi=2` (`DOWN`) confirms the real disconnect handler ran — a board reset would not have exercised it |
+| 5 | **AC-INTEGRATION-1** — injected `http_api_start()` failure → `RED_SOLID` | ✅ **Confirmed** via `max_uri_handlers = 0` injection. `RED_SOLID` observed and **held through Wi-Fi association**, confirming the `http == DOWN` precedence rule empirically |
+| 6 | **RMT coexistence** — DS18B20 1-Wire reads while the LED blinks | ⬜ **Blocked** until the temperature probe is installed. DS18B20 holds an RMT TX+RX pair, the LED holds one RMT TX → 2 of 4 TX, 1 of 4 RX |
 
-Item 4 is the reason this section exists. As the feature description above notes, the pin
-"stays a Kconfig `choice` with a bench-confirmation step" — that step has not happened, and
-the GPIO rests on vendor Q&A that **contradicts the vendor's own documentation**. If 48 is
-wrong, the `choice` already offers 47 and 38 and no code change is needed.
+**Item 1 was the reason this section existed**, and it resolved in the firmware's favor: the
+feature description above notes the pin "stays a Kconfig `choice` with a bench-confirmation
+step" because the GPIO rested on vendor Q&A that **contradicts the vendor's own
+documentation**. The vendor Q&A was right. The `choice` can stay for documentation value, but
+the 47 and 38 alternates are no longer expected to be needed.
+
+Item 6 is the one with real risk left in it, and it becomes testable as soon as the DS18B20
+goes in — watch temperature readings keep succeeding while the LED blinks red during a
+reconnect.

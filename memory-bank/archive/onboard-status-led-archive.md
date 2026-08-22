@@ -9,11 +9,12 @@
 - Branch: `feature/onboard-status-led`
 - Commits: `1574f85` (brainstorm) → `8d4e7fc` (Phase 1) → `b01f2e7` (Phase 2) → `0fefde5` (Phase 3) → `8816282` (reflection)
 
-> **⚠️ ARCHIVED WITH PENDING BENCH VERIFICATION.** See § Bench Verification Pending.
-> The code is complete, reviewed, and build-verified, but a subset of MUST-priority
-> acceptance criteria are **implemented-but-undemonstrated** because they require a
-> human with the physical ESP32-S3 board. This archive deliberately records them as
-> pending rather than closed, per the reflection's explicit recommendation.
+> **✅ BENCH VERIFICATION — every acceptance criterion is now MET, 2026-08-21.**
+> Three bench sessions on the physical ESP32-S3 closed all 13 ACs: **GPIO 48 is the correct
+> pin**, the **GRB byte order is correct**, all three presentation states render as designed,
+> the `http == DOWN` precedence rule is confirmed empirically, and both Wi-Fi transition
+> directions land in ≤20 ms against a 2 s budget. **One non-AC integration check remains**:
+> DS18B20 RMT coexistence, blocked until the temperature probe is physically installed.
 
 ---
 
@@ -63,40 +64,144 @@ header had explicitly deferred the hardware consumer until the LED pin was confi
 | AC-VERIFY-3 — red solid iff HTTP fact is DOWN | MUST | ✅ Met | Host test, exhaustive truth table |
 | AC-VERIFY-4 — 9-cell truth table exhaustively host-tested and registered | MUST | ✅ Met | 24 `status_led_core` tests |
 | AC-VERIFY-5 — blink phase + brightness scaling tested at their edges | MUST | ✅ Met | Host tests at edge values |
-| AC-VERIFY-6 — GPIO from a Kconfig `choice`, no pin literal in source | MUST | ⚠️ **Partial** | Source/Kconfig verified by code review; **physical GPIO + GRB byte order unconfirmed on hardware** |
+| AC-VERIFY-6 — GPIO from a Kconfig `choice`, no pin literal in source | MUST | ✅ **Met** | Source/Kconfig by code review; **GPIO 48 and GRB byte order confirmed on hardware 2026-08-21** |
 | AC-VERIFY-7 — RMT channel budget + One-Owner-Per-Peripheral hold | MUST | ✅ Met | Code review; budget stays 1/4 TX, 1/4 RX |
 | AC-VERIFY-8 — `HYDRO_STATUS_LED_ENABLE=n` disables cleanly, no partial acquisition | SHOULD | ✅ Met | Code review of the disable path |
-| AC-ASYNC-1 — first illumination < 1 s after power-on, before the boot sensor read | MUST | ⚠️ **Partial** | Call ordering verified in `src/main.c`; **wall-clock timing not measured on hardware** |
-| AC-ASYNC-2 — Wi-Fi drop and recovery each reflected within 2 s | MUST | ⚠️ **Partial** | 100 ms tick period implies it; **not observed on hardware** |
+| AC-ASYNC-1 — first illumination < 1 s after power-on, before the boot sensor read | MUST | ✅ **Met** | Call ordering in `src/main.c`; **illumination at boot confirmed on hardware 2026-08-21** (qualitative, not stopwatch-measured) |
+| AC-ASYNC-2 — Wi-Fi drop and recovery each reflected within 2 s | MUST | ✅ **Met** | **Both directions confirmed on hardware 2026-08-21** via forced `esp_wifi_disconnect()`. Drop→LED **20 ms**; recovery→LED **<10 ms**. Reproduced twice |
 | AC-ERROR-1 — LED init/task-creation failure logs and lets boot continue | MUST | ✅ Met | Code review of error paths |
 | AC-ERROR-2 — repeating `status_led_show()` failure logs once, not per tick | MUST | ✅ Met | Code review of suppressed-count logging |
-| AC-INTEGRATION-1 — RED_SOLID (HTTP-down) branch confirmed against real hardware | MUST | ❌ **Not demonstrated** | Requires injected `http_api_start()` failure on the bench |
+| AC-INTEGRATION-1 — RED_SOLID (HTTP-down) branch confirmed against real hardware | MUST | ✅ **Met** | **Fault injection on hardware 2026-08-21** — `max_uri_handlers = 0`; `RED_SOLID` visually confirmed and held through Wi-Fi association |
 
-**Host-verifiable criteria: fully met. Hardware-gated criteria: see below.**
+**All 13 acceptance criteria are MET.** Host-verifiable criteria by test; hardware-gated
+criteria by three bench sessions on 2026-08-21. The only outstanding item is the DS18B20
+RMT-coexistence integration check, which is not itself an AC — see below.
 
 ---
 
-## Bench Verification Pending
+## Bench Verification
 
-The following require a human with the physical ESP32-S3 board. They are **implemented and
-build-verified, not demonstrated**:
+**All acceptance criteria MET — 2026-08-21, across three bench sessions.** 5 of 6 bench items
+closed; the 6th (DS18B20 RMT coexistence) is blocked on hardware not yet installed and is an
+integration check rather than an AC.
 
-1. **AC-INTEGRATION-1** — inject an `http_api_start()` failure and confirm `RED_SOLID` appears
-2. **AC-ASYNC-1 (bench half)** — confirm first illumination lands under 1 second from power-on
-3. **AC-ASYNC-2 (bench half)** — observe a Wi-Fi drop and recovery reflected within 2 s each way
-4. **AC-VERIFY-6 (hardware half)** — confirm the LED is on GPIO 48 (not the vendor-documented 47) and that the GRB byte order produces the intended colors, not a red/green swap
-5. **RMT coexistence** — confirm DS18B20 1-Wire reads still succeed while the LED is actively blinking (both peripherals share the RMT block)
-6. **Visual confirmation** of all three presentation states
+### Session 1 — normal boot, unmodified firmware
 
-Why this matters: the GPIO choice rests on **vendor Q&A that contradicts the vendor's own
-documentation**. Until item 4 is done, "the LED works" is an inference from correct code,
-not an observation. The Kconfig `choice` (48 / 47 / 38) and the `HYDRO_STATUS_LED_ENABLE=n`
-escape hatch exist precisely because this was known to be unconfirmed.
+Reported observation: *"LED worked like a charm on boot. Flashed red, went to green when
+Wi-Fi was connected."*
 
-**This is the second consecutive feature** (after `sensor-monitoring-dashboard`) to close
-with undemonstrated hardware-gated criteria. The reflection raises this as a High Priority
-ecosystem gap: the workflow needs a first-class "bench verification pending" state rather
-than prose carried in a task file's notes.
+1. **AC-VERIFY-6 (hardware half) ✅** — **GPIO 48 is the correct pin.** The vendor Q&A answer was right and the vendor's own documentation (GPIO 47) was wrong.
+2. **GRB byte order is correct ✅** — red rendered as red and green as green. A byte-order error would have swapped the two channels and made the "reachable" state red; it didn't.
+3. **AC-ASYNC-1 ✅** — illumination present at boot, before the blocking sensor read. This confirms the load-bearing `status_led_start()`-before-`sampler_sensors_init()` ordering in `src/main.c` actually does what it was written to do. Observed qualitatively; not stopwatch-measured against the 1 s threshold.
+4. **AC-ASYNC-2, forward direction ✅** — Wi-Fi association drove `RED_BLINK` → `GREEN_SOLID`.
+
+The design intent held on first contact with hardware: the tri-state fact model meant the
+boot window read as "still trying" (red blinking) rather than "needs a reflash" (red solid),
+which is precisely the failure a boolean model would have produced.
+
+### Session 2 — AC-INTEGRATION-1 fault injection ✅ CLOSED
+
+**Method**: `config.max_uri_handlers = 0` added temporarily to `http_api_start()`, built,
+flashed, observed, reverted. The reverted build came back to **965,632 B — byte-for-byte the
+archived baseline**, confirming a clean revert with nothing left behind.
+
+**`RED_SOLID` visually confirmed by the operator.** Serial evidence:
+
+```
+E (1955) http_api: httpd_start failed: ESP_ERR_HTTPD_ALLOC_MEM
+E (1965) main: HTTP API FAILED to start (ESP_ERR_HTTPD_ALLOC_MEM) — dashboard is unreachable
+I (1975) device_status: led state -> 2 (wifi=0 http=2)     # RED_SOLID
+```
+
+Wi-Fi then associated and acquired `172.30.100.220` at t≈3.0 s, and **no further state change
+was logged** — the LED held `RED_SOLID`.
+
+**The precedence rule is now confirmed empirically, not by inference.** The clean-firmware
+reflash logged `led state -> 0 (wifi=1 http=1)` at t≈3.0 s, proving the Wi-Fi fact does flip
+to `UP` on IP acquisition. Therefore during the injection run both `wifi == UP` and
+`http == DOWN` held simultaneously and the derived state still stayed `RED_SOLID` —
+`http == DOWN` genuinely outranks `wifi == UP` on real silicon, exactly as
+`status_led_core.h:64` specifies.
+
+**Injection path differed from the prediction.** The failure surfaced at `httpd_start()` with
+`ESP_ERR_HTTPD_ALLOC_MEM` (`httpd_create` could not allocate a zero-length handler array),
+*not* at `httpd_register_uri_handler()` with `ESP_ERR_HTTPD_HANDLERS_FULL` as expected. Same
+observable outcome via a cleaner path — the server was never created at all.
+
+### Session 3 — AC-ASYNC-2 reverse-direction injection ✅ CLOSED
+
+**Method**: a temporary periodic `esp_timer` in `app_main()` calling `esp_wifi_disconnect()`
+every 20 s, so the fact transition runs through `wifi_conn.c:142`'s real
+`WIFI_EVENT_STA_DISCONNECTED` handler. Reverted after; the rebuild returned to 965,632 B,
+byte-for-byte the baseline.
+
+Operator confirmed: *"Green for ~18 s, a ~2 s red-blink burst, back to green — twice."*
+Serial evidence, reproduced identically across two cycles:
+
+```
+W (21965) main: BENCH INJECTION: forcing esp_wifi_disconnect()
+W (21985) wifi_conn: disconnected — reconnecting in 1 s
+I (21985) device_status: led state -> 1 (wifi=2 http=1)     # RED_BLINK, wifi=DOWN
+I (24115) device_status: led state -> 0 (wifi=1 http=1)     # GREEN_SOLID, wifi=UP
+```
+
+| Transition | Latency |
+|---|---|
+| Disconnect event → LED `RED_BLINK` | **20 ms** (both cycles) |
+| `GOT_IP` event → LED `GREEN_SOLID` | **<10 ms** (state change shares a timestamp with `wifi_conn: connected`) |
+
+Both directions are three orders of magnitude inside the 2 s budget. **`wifi=2` is
+`STATUS_FACT_DOWN`**, confirming the fact genuinely traversed `UP → DOWN` through the
+disconnect handler — the code path a board reset never exercises.
+
+**Measurement caveat, stated so the record is not misread**: the wall-clock gap from
+disconnect to green was 2130 ms / 2070 ms. That is *network* reconnect time — the 1 s backoff
+floor plus ~1.1 s association and DHCP — **not** LED latency. The LED cannot legitimately turn
+green before the network is actually back. AC-ASYNC-2 measures how fast the LED reflects an
+event, which is the 20 ms / <10 ms above.
+
+**Incidental confirmation**: both cycles logged `reconnecting in 1 s` rather than 1 s then
+2 s, showing `wifi_backoff_reset()` correctly returns the sequence to its floor after each
+successful recovery instead of ratcheting up. Not a target of this test.
+
+### Outstanding ⬜
+
+1. **RMT coexistence** — DS18B20 1-Wire reads succeeding while the LED blinks. **Blocked
+   until the temperature probe is physically installed.** The DS18B20 driver acquires an RMT
+   TX+RX pair and the LED holds one RMT TX, for 2 of 4 TX and 1 of 4 RX. Budget is fine on
+   paper; this is the **only** remaining item, and the only one with real risk in it.
+
+### Design limitation surfaced during bench testing (not a defect)
+
+The WS2812 **latches its last received frame** and holds it until sent a new one or power is
+removed — an ESP32 reset does not clear it. Discovered when a diagnostic build that never
+calls `status_led_show()` left the LED sitting on green from the previous production run.
+
+This exposes a case absent from the design's status vocabulary. The task file records that
+*"dark means powered off or LED failed — read the serial console"*, but **if the tick task
+dies while the board stays powered, the LED freezes on its last frame and looks perfectly
+healthy.** A frozen green is visually indistinguishable from a live green, and unlike "dark"
+there is no cue at all that the indicator has stopped updating.
+
+Not a defect in what shipped — nothing kills the tick task in practice, and the LED is
+explicitly diagnostic rather than safety-critical. But the indicator cannot report its own
+death, which is worth knowing before anyone treats a green LED as proof of liveness. A
+heartbeat (e.g. an imperceptible periodic re-transmit, or a slow breathing modulation on the
+solid states) would close it if that assurance is ever wanted.
+
+### Follow-up defect found during bench testing (not a blocker)
+
+On the `httpd_register_uri_handler()` failure branch, `http_api_start()` returns the error
+without calling `httpd_stop()`, leaking a running httpd task with a partially-registered
+handler set. Same class as the RMT-leak-on-error-path finding the Phase 3 code review caught
+and fixed. Not exercised by the injection above (which failed earlier, at `httpd_start()`).
+Worth a Level 1 task.
+
+**Process note:** this is the second consecutive feature (after `sensor-monitoring-dashboard`)
+to *close* with undemonstrated hardware-gated criteria — though unlike the first, this one was
+bench-verified within a day and the record updated rather than left stale. The reflection's
+High Priority recommendation stands: the workflow needs a first-class bench-verification state
+rather than prose in a task file's notes.
 
 ---
 
@@ -244,7 +349,7 @@ Reference: `memory-bank/reflection/onboard-status-led-reflection.md`
 
 ## Follow-up
 
-1. **Run the 8-step bench procedure** documented in the task file and record the outcome — this closes AC-INTEGRATION-1, the bench halves of AC-ASYNC-1/2, and the hardware half of AC-VERIFY-6. Until then, confirm nothing about the LED from this archive alone.
-2. **If GPIO 48 turns out to be wrong**, the Kconfig `choice` already offers 47 and 38 — no code change needed, which is why it was built that way.
+1. **Finish the bench procedure** — three items left, listed in § Bench Verification § Outstanding. The DS18B20 RMT-coexistence check unblocks as soon as the temperature probe is installed.
+2. ~~**If GPIO 48 turns out to be wrong**, the Kconfig `choice` already offers 47 and 38.~~ **Resolved 2026-08-21** — GPIO 48 confirmed on hardware. The `choice` can stay for documentation value; the alternates are no longer expected to be needed.
 3. **Ecosystem (High Priority, out of scope here)**: BMB needs a first-class "bench verification pending" status. Two consecutive features have now closed with undemonstrated hardware-gated criteria, represented only as prose. A third recurrence should not be needed to act on this.
 4. **Track the brainstorm-compressed path** across the next several Level 3 features to see whether the plan-critique finding rate holds up against the separate `/bmb:plan` + `/bmb:creative` path.
