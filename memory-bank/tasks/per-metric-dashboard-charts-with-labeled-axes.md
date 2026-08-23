@@ -2,13 +2,13 @@
 slug: per-metric-dashboard-charts-with-labeled-axes
 legacy_id:
 feature: per-metric-dashboard-charts-with-labeled-axes
-status: PLANNING_COMPLETE
+status: CREATIVE_COMPLETE
 ---
 
 # per-metric-dashboard-charts-with-labeled-axes: Per-metric Dashboard Charts With Labeled Axes
 
 **Complexity**: Level 3
-**Status**: PLANNING_COMPLETE
+**Status**: CREATIVE_COMPLETE
 **Roadmap**: per-metric-dashboard-charts-with-labeled-axes
 **Branch**: feature/per-metric-dashboard-charts-with-labeled-axes
 **Worktree**: N/A
@@ -686,27 +686,85 @@ check (R4).
 Level 3 with LOW-confidence fields flagged by the Spec Writer → creative is **REQUIRED**.
 The four open questions from the roadmap map onto two creative agents:
 
-- [ ] **Algorithm Design** → `/bmb:creative` — tick interval selection ("nice" round steps), tick
-      count, and behavior on single-value, mostly-null, and zero-range series. Pure logic, but the
-      algorithm is a design decision rather than a discoverable fact.
-- [ ] **UI/UX Design** → `/bmb:creative` — (a) layout: three canvases vs stacked panels vs inline
-      SVG, and phone reflow; (b) water-level chart form: step line vs filled bands vs lane strip,
-      and how FAULT reads without color; (c) **canvas vs inline SVG** — resolve this first, it is
-      the one-way door in R1 and it determines how much of Phase 2 exists.
+- [x] **Algorithm Design** → **COMPLETE** (2026-08-23) — output:
+      `memory-bank/creative/per-metric-dashboard-charts-with-labeled-axes-axis-ticks-algorithm.md`.
+      Decision: decimal-magnitude 1/2/5 "nice" stepper for the numeric Y axes (~35 SLOC, provable
+      [3,7] tick-count bound, step-derived decimals) + index-sampled ticks drawn from the
+      valid-timestamp subset for the time X axis (makes AC-ERROR-3 structural — no code path can
+      derive a label from a `time_valid: false` entry). Pinned API: `buildMetricAxis`,
+      `buildTimeAxis`, `sampleX`, `formatAxisTimestamp`; `buildChartSeries` gains `t`/`timeValid`
+      pass-through. R4 mitigated structurally: one function returns `state` **and** `segments`, so
+      `app.js` keeps zero numeric predicates.
+- [x] **UI/UX Design** → **COMPLETE** (2026-08-23) — output:
+      `memory-bank/creative/per-metric-dashboard-charts-with-labeled-axes-chart-panels-uiux.md`.
+      Decision: three `<canvas>` elements (`#chart-temp` 900×220, `#chart-light` 900×220,
+      `#chart-level` 900×140) in three `.chart-panel` sections, extending the shipped canvas +
+      Pure-Logic/Device-Only pattern. **R1 resolved → canvas**, and resolved *against* the plan's
+      assumption: WI-004 is NOT shrunk, because the accessible summary is a narrative sentence that
+      no tick markup (canvas or SVG) provides for free. **R2 resolved → default**: no 5th asset, no
+      firmware/embed/route-table change. Water level = single-row labeled band strip (not a step
+      line — a line would imply FAULT sits below LOW on a continuous scale), with diagonal hatching
+      as the non-color FAULT/UNKNOWN distinction.
 
 Architecture Design is **not** flagged: the change is confined to `src/web/` and its host tests,
 reuses the established Pure-Logic / Device-Only Split unchanged, and adds no new module, endpoint,
 or data path. The one architectural question it does raise (does SVG move axis labels out of the
 pure layer and into markup?) is folded into the UI/UX canvas-vs-SVG decision above.
 
+## Design Critique (advisory)
+
+**Backend**: `anthropic` (`backends.creative-critique: anthropic` — same-provider self-critique;
+Codex is the stronger default for independence but is not installed on this machine).
+**Verdict**: **CHANGES RECOMMENDED** — both design docs are individually sound and internally
+well-argued, but they were authored concurrently and disagree with each other on three pins that
+`/bmb:build` would hit as hard conflicts in Phase 1/2. None of the findings invalidate either
+decision (canvas, 1/2/5 stepper); all are reconciliations or scoped follow-ups. **Advisory only —
+does not block `/bmb:build`.**
+
+**Summary**: the two-agent split produced a clean division on the *hard* questions (R1, R2, tick
+algorithm) but overlapped on the WI-004 seam, where both docs independently pinned names, states,
+and copy. Reconcile that seam before Phase 1 or the first build agent picks one arbitrarily.
+
+| # | Severity | Finding |
+|---|----------|---------|
+| C1 | High | Empty-state copy contradiction: UI/UX pins `'no data to plot — sensors offline'` (plural, "identical to today's"); Algorithm pins `'no data to plot — sensor offline'` (singular, a deliberate change). Both are stated as binding. |
+| C2 | High | Overlapping API pins at the WI-004 seam: UI/UX pins `computeAxisTicks` + "three empty-state-selector helpers"; Algorithm pins `buildMetricAxis` and explicitly forbids an exported per-metric predicate. `segments` also names two different concepts (numeric finite runs vs level bands). |
+| C3 | High | All-`UNKNOWN` level is specified to render the "sensor offline" empty state, which makes the UI/UX doc's own UNKNOWN band encoding unreachable in the exact case it was designed for — and contradicts AC-HAPPY-3, which requires UNKNOWN to be a distinguishable band. `UNKNOWN` is a *reported* value from `level_json_name`, not an absence of data. |
+| C4 | Medium | UI/UX responsive spec self-contradicts: Layout says the mobile backing store "is reduced"; the Responsive Behavior table says only CSS scaling applies. Under the latter, 14px canvas text at a 900px backing store renders ~5.6 CSS px on a 360px phone — against the persona's "Phone glance" use case and the feature's entire purpose (readable tick values). |
+| C5 | Medium | `buildTimeAxis().caption` is guaranteed "always a non-empty string ... no null-caption branch for the renderer to forget", but the UI/UX component spec has no slot that draws it. Related: replacing `<h2>Last 24 Hours</h2>` with three metric headings removes the window context from the page, and `caption` is what was meant to carry it. |
+| C6 | Medium | The negative-domain wart (`[−1, 1]` for an all-zero series) is justified as needing "a permanently-stuck sensor", but it is reachable in normal operation: a device booted after dark has an all-zero `lux` window until dawn, so a night-time bench session would show negative lux ticks. The deferral of `options.nonNegative` may be under-justified. |
+| C7 | Low-Med | The stated even-spacing precondition names only a `vTaskDelay` regression in `src/sampler.c`. `reading_store_core_downsample` spreads points evenly across the *stored index range*, so a reboot or sampler stall makes index spacing ≠ time spacing — index-based ticks would misrepresent time across the gap. Precondition should name that case too. |
+| C8 | Low | `hasPlottableData` is retained as a superseded export solely to keep its 5 tests green. The plan's WI-004 says to *adapt* those tests to the per-chart successors; keeping dead exported code diverges from that, silently. |
+| C9 | Low | Algorithm doc specifies 22 Phase 1 tests against the plan's ~12 budget. With Phase 2 still to come, the total will exceed the plan's itemized ~26-test justification — either trim or re-justify rather than letting it drift. |
+
+**Recommendations** (for `/bmb:build` Phase 1 to resolve first, in order):
+
+1. **C1** — adopt the singular `'no data to plot — sensor offline'`; the Algorithm doc's reasoning
+   (each chart now speaks for one sensor) is correct and the plural was only inherited from the
+   shared-canvas era. Record it as a deliberate copy change so the AC-ERROR-1 verification step
+   reads the spec's quoted string as illustrative, not literal.
+2. **C2** — `buildMetricAxis` supersedes `computeAxisTicks` and the empty-state selectors; the three
+   `build*ChartAriaLabel` builders survive but consume `MetricAxis.dataRange` instead of re-calling
+   `finiteRange`. Rename the level segmentation output to `bands` / `buildLevelBands` so it cannot
+   collide with `MetricAxis.segments`.
+3. **C3** — render all-`UNKNOWN` as an UNKNOWN band with the summary saying so; reserve the level
+   chart's empty state for `n === 0` only.
+4. **C4** — resolve the contradiction explicitly, then use the lever the Algorithm doc already
+   provides (`options.targetTickCount`) plus a larger on-canvas font, and add a phone-width tick
+   legibility check to the Phase 3 bench list. Note the seconds component (`10:13:20 PM`) is pure
+   width cost on an ~8-minute-spaced axis; `toLocaleTimeString(undefined, {hour, minute})` is still
+   browser-locale formatting, so dropping seconds does not violate the doc's no-hand-rolled-dates rule.
+5. **C5** — give `caption` an explicit slot (a `<p class="chart-caption">` under the level chart, or
+   under each chart) in WI-005's markup.
+
 ---
 
 ## Execution State
 
 **Build Status**: IDLE
-**Current Phase**: CREATIVE
-**Current Step**: Planning complete — awaiting `/bmb:creative`
-**Last Completed**: Step 6 (Finalize) — 2026-08-23
+**Current Phase**: CREATIVE → BUILD
+**Current Step**: Creative complete — awaiting `/bmb:build`
+**Last Completed**: Step 4.5 (Adversarial Design Critique) — 2026-08-23
 **Can Resume**: NO
 
 ### Active Sub-Agents
@@ -726,6 +784,16 @@ pure layer and into markup?) is folded into the UI/UX canvas-vs-SVG decision abo
 - Step 4: Codebase analysis — verified against `app.js`, `dashboard-logic.js`, `index.html`, `style.css`, `dashboard-logic.test.mjs`, `http_api.c`, `reading_json.c`, `embed_web_assets.py`
 - Step 5: Implementation plan, test strategy, work items, pinned new source files
 - Step 6: Validation gate passed; status → PLANNING_COMPLETE
+
+**`/bmb:creative` — 2026-08-23**
+- Phase gate PASS (4 phases in Implementation Roadmap, Level 3); clean-tree gate clean; branch 2 ahead / 0 behind `origin/main`, no rebase needed
+- Step 0.5: Agent rules index current (4 `_learned/` rules; index newer than newest rule)
+- Glossary loader: **skipped** — no `memory-bank/c4/c4-glossary.md` on `main`
+- UI/UX Creative Design: **COMPLETE** — Output: `memory-bank/creative/per-metric-dashboard-charts-with-labeled-axes-chart-panels-uiux.md` (backend `anthropic`)
+- Algorithm Creative Design: **COMPLETE** — Output: `memory-bank/creative/per-metric-dashboard-charts-with-labeled-axes-axis-ticks-algorithm.md` (backend `anthropic`)
+- Step 4.5: `CREATIVE CRITIQUE: anthropic — configured:anthropic`. Verdict **CHANGES RECOMMENDED**, 9 advisory findings (3 High) — see § Design Critique (advisory). Does not block build.
+- Step 5: Status → CREATIVE_COMPLETE
+- New terms flagged (informational, no glossary exists to ratify into): `chart-panel` (CSS class / section role); level "band/step strip" (water-level chart form)
 
 ### Verification Baselines (recorded at plan time)
 - `node --test test/web/*.test.mjs` → **25 pass / 0 fail** (Node v24, zero npm deps).
