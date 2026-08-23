@@ -4,17 +4,17 @@
 - Task: `onboard-status-led`
 - Complexity: Level 3
 - Started: 2026-08-20
-- Completed: 2026-08-21
+- Completed: 2026-08-21 (code) / 2026-08-23 (bench verification complete)
 - Roadmap Link: `onboard-status-led` (version `next`)
 - Branch: `feature/onboard-status-led`
 - Commits: `1574f85` (brainstorm) → `8d4e7fc` (Phase 1) → `b01f2e7` (Phase 2) → `0fefde5` (Phase 3) → `8816282` (reflection)
 
-> **✅ BENCH VERIFICATION — every acceptance criterion is now MET, 2026-08-21.**
-> Three bench sessions on the physical ESP32-S3 closed all 13 ACs: **GPIO 48 is the correct
-> pin**, the **GRB byte order is correct**, all three presentation states render as designed,
-> the `http == DOWN` precedence rule is confirmed empirically, and both Wi-Fi transition
-> directions land in ≤20 ms against a 2 s budget. **One non-AC integration check remains**:
-> DS18B20 RMT coexistence, blocked until the temperature probe is physically installed.
+> **✅ BENCH VERIFICATION COMPLETE — 2026-08-23. Nothing outstanding.**
+> Four bench sessions on the physical ESP32-S3 closed all 13 acceptance criteria and all 6
+> bench items: **GPIO 48 is the correct pin**, the **GRB byte order is correct**, all three
+> presentation states render as designed, the `http == DOWN` precedence rule is confirmed
+> empirically, both Wi-Fi transition directions land in ≤20 ms against a 2 s budget, and
+> **DS18B20 1-Wire reads coexist with the LED's RMT traffic** (40 reads, 0 failures).
 
 ---
 
@@ -65,7 +65,7 @@ header had explicitly deferred the hardware consumer until the LED pin was confi
 | AC-VERIFY-4 — 9-cell truth table exhaustively host-tested and registered | MUST | ✅ Met | 24 `status_led_core` tests |
 | AC-VERIFY-5 — blink phase + brightness scaling tested at their edges | MUST | ✅ Met | Host tests at edge values |
 | AC-VERIFY-6 — GPIO from a Kconfig `choice`, no pin literal in source | MUST | ✅ **Met** | Source/Kconfig by code review; **GPIO 48 and GRB byte order confirmed on hardware 2026-08-21** |
-| AC-VERIFY-7 — RMT channel budget + One-Owner-Per-Peripheral hold | MUST | ✅ Met | Code review; budget stays 1/4 TX, 1/4 RX |
+| AC-VERIFY-7 — RMT channel budget + One-Owner-Per-Peripheral hold | MUST | ✅ Met | Code review, **plus hardware A/B 2026-08-23**: DS18B20 (TX+RX) and LED (TX) coexist, 40 reads / 0 failures |
 | AC-VERIFY-8 — `HYDRO_STATUS_LED_ENABLE=n` disables cleanly, no partial acquisition | SHOULD | ✅ Met | Code review of the disable path |
 | AC-ASYNC-1 — first illumination < 1 s after power-on, before the boot sensor read | MUST | ✅ **Met** | Call ordering in `src/main.c`; **illumination at boot confirmed on hardware 2026-08-21** (qualitative, not stopwatch-measured) |
 | AC-ASYNC-2 — Wi-Fi drop and recovery each reflected within 2 s | MUST | ✅ **Met** | **Both directions confirmed on hardware 2026-08-21** via forced `esp_wifi_disconnect()`. Drop→LED **20 ms**; recovery→LED **<10 ms**. Reproduced twice |
@@ -73,17 +73,16 @@ header had explicitly deferred the hardware consumer until the LED pin was confi
 | AC-ERROR-2 — repeating `status_led_show()` failure logs once, not per tick | MUST | ✅ Met | Code review of suppressed-count logging |
 | AC-INTEGRATION-1 — RED_SOLID (HTTP-down) branch confirmed against real hardware | MUST | ✅ **Met** | **Fault injection on hardware 2026-08-21** — `max_uri_handlers = 0`; `RED_SOLID` visually confirmed and held through Wi-Fi association |
 
-**All 13 acceptance criteria are MET.** Host-verifiable criteria by test; hardware-gated
-criteria by three bench sessions on 2026-08-21. The only outstanding item is the DS18B20
-RMT-coexistence integration check, which is not itself an AC — see below.
+**All 13 acceptance criteria are MET, and bench verification is complete.** Host-verifiable
+criteria by test; hardware-gated criteria across four bench sessions (2026-08-21 to
+2026-08-23). Nothing outstanding.
 
 ---
 
 ## Bench Verification
 
-**All acceptance criteria MET — 2026-08-21, across three bench sessions.** 5 of 6 bench items
-closed; the 6th (DS18B20 RMT coexistence) is blocked on hardware not yet installed and is an
-integration check rather than an AC.
+**COMPLETE — 2026-08-23, across four bench sessions.** All 13 acceptance criteria and all 6
+bench-verification items are closed. Nothing outstanding.
 
 ### Session 1 — normal boot, unmodified firmware
 
@@ -164,12 +163,37 @@ event, which is the 20 ms / <10 ms above.
 2 s, showing `wifi_backoff_reset()` correctly returns the sequence to its floor after each
 successful recovery instead of ratcheting up. Not a target of this test.
 
-### Outstanding ⬜
+### Session 4 — RMT coexistence ✅ CLOSED (2026-08-23)
 
-1. **RMT coexistence** — DS18B20 1-Wire reads succeeding while the LED blinks. **Blocked
-   until the temperature probe is physically installed.** The DS18B20 driver acquires an RMT
-   TX+RX pair and the LED holds one RMT TX, for 2 of 4 TX and 1 of 4 RX. Budget is fine on
-   paper; this is the **only** remaining item, and the only one with real risk in it.
+The last open item. The DS18B20 driver acquires an RMT **TX+RX** pair and the status LED
+holds one RMT **TX** — 2 of 4 TX and 1 of 4 RX on the ESP32-S3. The budget was fine on paper
+but unproven on silicon, and this was the only remaining item carrying real risk.
+
+**Method**: a controlled A/B on hardware, once the DS18B20 was physically installed. Both
+phases ran an identical load of 20 `sensor_hub_temp_read()` calls at 100 ms spacing:
+
+- **Control** — LED `GREEN_SOLID` (transmit-on-change means no RMT traffic from the LED)
+- **Test** — LED forced to `RED_BLINK` by reporting the wifi fact DOWN *without* dropping the
+  real connection, giving a sustained blink window rather than the ~2 s a genuine reconnect
+  allows. The LED transmits an RMT frame every `BLINK_MS` (500 ms default) throughout.
+
+```
+RMT COEXIST [control/solid]:  20 ok / 0 fail, range 23.19..23.19 C
+RMT COEXIST [test/blinking]:  20 ok / 0 fail, range 23.19..23.25 C
+VERDICT: PASS — no read failures in either phase
+```
+
+**40 reads, zero failures.** Stronger than "nothing errored": the readings stayed sane and
+stable (23.19–23.25 °C) across the blinking phase, so the 1-Wire transactions returned
+*correct data* while the LED was actively driving RMT — not merely avoiding errors. The
+control phase establishes that 0 failures is the baseline, so the test phase's 0 is
+meaningful rather than a load too light to stress anything.
+
+AC-VERIFY-7's RMT-budget claim is now confirmed empirically, not just by code review.
+
+### Outstanding
+
+**None.** All 13 acceptance criteria and all 6 bench-verification items are closed.
 
 ### Design limitation surfaced during bench testing (not a defect)
 
@@ -349,7 +373,7 @@ Reference: `memory-bank/reflection/onboard-status-led-reflection.md`
 
 ## Follow-up
 
-1. **Finish the bench procedure** — three items left, listed in § Bench Verification § Outstanding. The DS18B20 RMT-coexistence check unblocks as soon as the temperature probe is installed.
+1. ~~**Finish the bench procedure.**~~ **Done 2026-08-23** — all bench items closed across four sessions.
 2. ~~**If GPIO 48 turns out to be wrong**, the Kconfig `choice` already offers 47 and 38.~~ **Resolved 2026-08-21** — GPIO 48 confirmed on hardware. The `choice` can stay for documentation value; the alternates are no longer expected to be needed.
 3. **Ecosystem (High Priority, out of scope here)**: BMB needs a first-class "bench verification pending" status. Two consecutive features have now closed with undemonstrated hardware-gated criteria, represented only as prose. A third recurrence should not be needed to act on this.
 4. **Track the brainstorm-compressed path** across the next several Level 3 features to see whether the plan-critique finding rate holds up against the separate `/bmb:plan` + `/bmb:creative` path.
