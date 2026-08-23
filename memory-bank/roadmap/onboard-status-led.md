@@ -1,8 +1,8 @@
 ---
 version: next
 status: completed
-bench_verification: acceptance_criteria_met
-bench_open_items: [ds18b20-rmt-coexistence]
+bench_verification: complete
+bench_verified: 2026-08-23
 priority: medium
 complexity: 3
 linked_tasks: [onboard-status-led]
@@ -12,14 +12,14 @@ completed: 2026-08-21
 
 # Onboard Status LED
 
-> **Status: completed — every acceptance criterion MET on hardware (2026-08-21).** All three
-> phases are built, reviewed, and build-verified; the task `onboard-status-led` is COMPLETE
-> and archived at `memory-bank/archive/onboard-status-led-archive.md`. Three bench sessions
-> closed all 13 ACs: GPIO 48 is the right pin, GRB byte order is correct, all three
-> presentation states render as designed, the `http == DOWN` precedence rule holds on real
-> silicon, and both Wi-Fi transition directions land in ≤20 ms against a 2 s budget. **One
-> non-AC integration check remains** — DS18B20 RMT coexistence, blocked until the temperature
-> probe is installed. See § Bench Verification below.
+> **Status: completed — bench verification COMPLETE (2026-08-23). Nothing outstanding.**
+> All three phases are built, reviewed, and build-verified; the task `onboard-status-led` is
+> COMPLETE and archived at `memory-bank/archive/onboard-status-led-archive.md`. Four bench
+> sessions closed all 13 ACs and all 6 bench items: GPIO 48 is the right pin, GRB byte order
+> is correct, all three presentation states render as designed, the `http == DOWN` precedence
+> rule holds on real silicon, both Wi-Fi transition directions land in ≤20 ms against a 2 s
+> budget, and DS18B20 1-Wire reads coexist with the LED's RMT traffic (40 reads, 0 failures).
+> See § Bench Verification below.
 
 Drive the ESP32-S3-N16R8's onboard addressable RGB LED (WS2812 on GPIO 48) as a
 firmware reachability indicator, so the device reports its own health without a
@@ -83,8 +83,8 @@ blocking findings, security PASS, 0 new external dependencies.
 
 ## Bench Verification
 
-**All acceptance criteria MET — 2026-08-21, across three bench sessions.** 5 of 6 bench items
-closed; the 6th is blocked on hardware not yet installed.
+**COMPLETE — 2026-08-23, across four bench sessions.** All 13 acceptance criteria and all 6
+bench-verification items closed. Nothing outstanding.
 
 | # | Check | Result |
 |---|---|---|
@@ -93,7 +93,7 @@ closed; the 6th is blocked on hardware not yet installed.
 | 3 | **AC-ASYNC-1** — illumination at boot, before the blocking sensor read | ✅ Confirmed qualitatively ("on boot"); not stopwatch-measured against the 1 s threshold |
 | 4 | **AC-ASYNC-2** — Wi-Fi transitions reflected within 2 s each way | ✅ **Both directions** via forced `esp_wifi_disconnect()`. Drop→LED **20 ms**, recovery→LED **<10 ms**, reproduced twice. `wifi=2` (`DOWN`) confirms the real disconnect handler ran — a board reset would not have exercised it |
 | 5 | **AC-INTEGRATION-1** — injected `http_api_start()` failure → `RED_SOLID` | ✅ **Confirmed** via `max_uri_handlers = 0` injection. `RED_SOLID` observed and **held through Wi-Fi association**, confirming the `http == DOWN` precedence rule empirically |
-| 6 | **RMT coexistence** — DS18B20 1-Wire reads while the LED blinks | ⬜ **Blocked** until the temperature probe is installed. DS18B20 holds an RMT TX+RX pair, the LED holds one RMT TX → 2 of 4 TX, 1 of 4 RX |
+| 6 | **RMT coexistence** — DS18B20 1-Wire reads while the LED blinks | ✅ **PASS 2026-08-23.** Controlled A/B, 20 reads each phase: solid-green **20 ok / 0 fail**, blinking-red **20 ok / 0 fail**, values stable 23.19–23.25 °C |
 
 **Item 1 was the reason this section existed**, and it resolved in the firmware's favor: the
 feature description above notes the pin "stays a Kconfig `choice` with a bench-confirmation
@@ -101,6 +101,8 @@ step" because the GPIO rested on vendor Q&A that **contradicts the vendor's own
 documentation**. The vendor Q&A was right. The `choice` can stay for documentation value, but
 the 47 and 38 alternates are no longer expected to be needed.
 
-Item 6 is the one with real risk left in it, and it becomes testable as soon as the DS18B20
-goes in — watch temperature readings keep succeeding while the LED blinks red during a
-reconnect.
+Item 6 was the one carrying real risk, and it closed cleanly: with the DS18B20 installed, a
+controlled A/B ran identical 20-read loads with the LED solid versus blinking. Zero failures
+in both phases, and the readings stayed stable throughout — so the 1-Wire transactions
+returned correct data while the LED drove RMT, not merely avoided errors. AC-VERIFY-7's
+budget claim is now empirical rather than review-only.

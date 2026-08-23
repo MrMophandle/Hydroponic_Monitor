@@ -9,7 +9,7 @@ status: COMPLETE
 
 **Complexity**: Level 3
 **Status**: COMPLETE
-**Bench Verification**: ALL ACCEPTANCE CRITERIA MET (2026-08-21) — 3 bench sessions closed all 13 ACs. One non-AC integration check remains: DS18B20 RMT coexistence, blocked until the probe is installed. See § Bench Verification in the archive.
+**Bench Verification**: COMPLETE (2026-08-23) — 4 bench sessions closed all 13 ACs and all 6 bench items. Nothing outstanding. See § Bench Verification in the archive.
 **Archived**: memory-bank/archive/onboard-status-led-archive.md
 **Completed**: 2026-08-21
 **Reflection**: memory-bank/reflection/onboard-status-led-reflection.md
@@ -550,11 +550,10 @@ were re-run after every spec re-dispatch and after each direct edit — **CLEAN*
 - Step 4 Git Commit: COMPLETE
 
 ### Open Item Carried to Archive
-**Bench verification — ALL ACCEPTANCE CRITERIA MET (2026-08-21)**, across three sessions on
-the physical ESP32-S3. All three LED presentation states confirmed, both Wi-Fi transition
-directions measured, and the precedence rule verified empirically. 5 of 6 bench items closed;
-the 6th (DS18B20 RMT coexistence) is blocked on hardware not yet installed and is an
-integration check rather than an AC.
+**Bench verification COMPLETE (2026-08-23)**, across four sessions on the physical ESP32-S3.
+All 13 acceptance criteria and all 6 bench items are closed. All three LED presentation states
+confirmed, both Wi-Fi transition directions measured, the precedence rule verified
+empirically, and DS18B20/LED RMT coexistence proven under load.
 
 ### Session 1 — normal boot (unmodified firmware)
 Reported observation: *"LED worked like a charm on boot. Flashed red, went to green when
@@ -611,8 +610,24 @@ I (24115) device_status: led state -> 0 (wifi=1 http=1)     # GREEN_SOLID, wifi=
 - **Caveat so this is not misread**: the wall-clock disconnect→green gap was 2130/2070 ms. That is *network* reconnect time (1 s backoff floor + ~1.1 s assoc/DHCP), not LED latency — the LED cannot turn green before the network is back.
 - Incidental: both cycles logged `reconnecting in 1 s` rather than 1 s then 2 s, confirming `wifi_backoff_reset()` returns the sequence to its floor after each recovery.
 
+### Session 4 — RMT coexistence ✅ CLOSED (2026-08-23)
+With the DS18B20 physically installed, a controlled A/B ran identical 20-read loads under two
+LED conditions. Forced `RED_BLINK` by reporting the wifi fact DOWN *without* dropping the real
+connection, giving a sustained blink window instead of the ~2 s a genuine reconnect allows.
+
+```
+RMT COEXIST [control/solid]:  20 ok / 0 fail, range 23.19..23.19 C
+RMT COEXIST [test/blinking]:  20 ok / 0 fail, range 23.19..23.25 C
+VERDICT: PASS
+```
+
+40 reads, zero failures. Readings stayed stable through the blinking phase, so the 1-Wire
+transactions returned *correct data* while the LED drove RMT — not merely avoided errors. The
+control phase establishes 0 failures as the baseline, making the test phase's 0 meaningful.
+AC-VERIFY-7's RMT-budget claim is now empirical rather than review-only.
+
 ### Still outstanding
-- **RMT coexistence** — DS18B20 1-Wire reads succeeding while the LED blinks. **Blocked** until the temperature probe is physically installed; the DS18B20 holds an RMT TX+RX pair and the LED holds one RMT TX (2 of 4 TX, 1 of 4 RX). This is now the **only** open item, and the only one with real risk in it. It is an integration check, not an acceptance criterion.
+**None.** Bench verification is complete.
 
 ### Follow-up defect noticed during this test (not a blocker)
 On the `httpd_register_uri_handler()` failure branch, `http_api_start()` returns the error
