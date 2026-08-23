@@ -2,13 +2,13 @@
 slug: per-metric-dashboard-charts-with-labeled-axes
 legacy_id:
 feature: per-metric-dashboard-charts-with-labeled-axes
-status: INITIALIZED
+status: PLANNING_COMPLETE
 ---
 
 # per-metric-dashboard-charts-with-labeled-axes: Per-metric Dashboard Charts With Labeled Axes
 
 **Complexity**: Level 3
-**Status**: INITIALIZED
+**Status**: PLANNING_COMPLETE
 **Roadmap**: per-metric-dashboard-charts-with-labeled-axes
 **Branch**: feature/per-metric-dashboard-charts-with-labeled-axes
 **Worktree**: N/A
@@ -80,50 +80,633 @@ which the current single-value badge can express.
 - New retention windows, zoom, pan, or range selection.
 - Any change to the three current-value tiles or their badges.
 
-## User Journey Definition
+## Specification
 
 **Feature Type**: End-User Feature
-**Creative Phase Required**: Yes — pending Spec Writer confidence assessment
+**Primary Persona**: "User (me)" — the sole operator/owner of the hydroponic system
+(productBrief.md § Key Personas → Primary Users). Goal: "Load a webpage that shows how
+the hydroponic system is performing." Pain point being addressed here specifically:
+today's single overlaid canvas lets them recognize a shape but not read off a value —
+they cannot tell, at a glance, what the water temperature was at 3am or whether the
+water level dipped to LOW overnight.
+**Creative Exploration Needed**: Yes — see § Creative Exploration Needed below. Tick
+generation, chart layout/reflow, and the water-level chart form are open design
+questions the roadmap file defers to `/bmb:creative`; this spec is concrete on
+everything else (data source, empty/error states, accessibility contract, scope).
 
-### Invocation Method (End-User Features)
-- **Location**: TBD by Spec Writer
-- **Element**: TBD by Spec Writer
-- **Visibility**: TBD by Spec Writer
-- **Navigation**: TBD by Spec Writer
+### Invocation Method
 
-### Success Criteria (End-User Features)
-- **User sees**: TBD by Spec Writer
-- **User can verify at**: TBD by Spec Writer
-- **Data persisted**: TBD by Spec Writer
-- **Observable within**: TBD by Spec Writer
+- **Location**: No navigation exists to find — the persona loads the device's LAN root
+  URL (`GET /`, `src/http_api.c:root_get_handler`) with no login (productBrief.md §
+  User Flows: "No authentication, user loads the webpage and sees the statistics"). The
+  three charts replace the current single `<section class="chart-section">` block in
+  `src/web/index.html:36-48`, which sits immediately below the three current-value
+  cards (`<section class="cards">`, `src/web/index.html:16-34`, `#card-temp` /
+  `#card-light` / `#card-level`) and is unaffected by this task.
+- **Element**: Today that section holds one `<h2>Last 24 Hours</h2>` and one
+  `<canvas id="history-chart" width="900" height="320">` (`index.html:37-46`). This
+  task replaces it with three chart panels, each with its own heading naming the
+  metric and unit — e.g. "Water Temperature (°C)", "Ambient Light (lux)", "Water
+  Level" — and its own empty/offline state, per `#AC-ERROR-1` below. Exact per-chart
+  markup (three `<canvas>` elements vs. one canvas with sub-regions vs. inline SVG) is
+  an open creative question (see below); whichever form is chosen, each of the three
+  metrics MUST be independently identifiable by heading text, not by position alone.
+- **Visibility**: Always visible, no toggle/menu — unchanged from today.
+- **Navigation**: Zero clicks. The persona scrolls (or, at typical desktop widths,
+  simply looks) past the card row to the chart section on the same page. Mobile reflow
+  of three charts vs. the current single canvas is one of the open creative questions
+  (`#history-chart` is currently `width: 100%; height: auto` over a fixed 900×320
+  backing store, `style.css:121-126`).
+- **Confidence**: **HIGH** that the section location and no-navigation model carry
+  over unchanged (verified in `index.html`, `http_api.c`, productBrief.md). **LOW** on
+  the internal layout/markup of the three charts and their responsive behavior — this
+  is an explicit open creative question, not a gap in research.
+
+### Success Criteria
+
+- **User sees**: Three charts, each independently Y-scaled to its own metric's
+  observed range and unit label (°C / lux / level band), each with time (X-axis) tick
+  labels drawn from the same `t` / `time_valid` history data the current-value tiles
+  and existing `buildChartAriaLabel` already consume. A reading can be approximated by
+  its position against an axis tick, not merely recognized as a line's rough shape —
+  this directly replaces the current cross-series scale collision (`plotSeries`
+  independently rescaling `temp_c` and `lux` onto a shared, unlabeled canvas,
+  `app.js:125-158`).
+- **Verifiable at**: Same page, same chart section, no additional page or endpoint.
+- **Data persisted**: None new. All three charts read the existing
+  `GET /api/history?points=180` response (`t`, `time_valid`, `lux`, `temp_c`, `level`
+  arrays — `reading_json_write_history`, `lib/reading_json/src/reading_json.c:166-192`)
+  already fetched by `fetchHistory()` (`app.js:164-182`) and already passed through
+  `DashboardLogic.buildChartSeries` (`dashboard-logic.js:94-111`), which already
+  carries `level` through untouched (`hasPlottableData` is the only place that
+  currently excludes it, `dashboard-logic.js:155-160`). No new persistence, no new
+  HTTP route, no firmware change (`/api/history` already serves everything needed —
+  matches the roadmap's Out-of-scope declaration).
+- **Observable within**: Immediate on page load (first `fetchHistory()` call,
+  `app.js:209`); refreshed on every subsequent successful `/api/history` poll
+  (`POLL_INTERVAL_MS = 30000`, `app.js:20,204-211`) — unchanged cadence, not a new
+  timing guarantee introduced by this task. Per the project's own planning-time
+  lesson (`_learned/planning-specification.md`: state timing thresholds as an
+  observable event, not a cadence), AC-ASYNC-1 below is worded as "on the next
+  successful history fetch," not "within 30 seconds."
 
 ### Acceptance Criteria
-TBD by Spec Writer
+
+#### AC-ENTRY-1: The three per-metric charts are discoverable at their existing location with no navigation
+**Priority**: MUST
+**Given** the persona's browser is pointed at the device's LAN root URL with no prior
+navigation or login step
+**When** the page finishes loading (`dashboard-logic.js` then `app.js` execute per the
+load order in `index.html:50-55`)
+**Then** the chart section beneath the three current-value cards presents three
+distinct, separately-headed chart panels — one named for water temperature and stating
+°C, one named for ambient light and stating lux, one named for water level — replacing
+today's single unlabeled `#history-chart` canvas; none of the three current-value
+cards or their badges are altered
+**Verification**:
+- [ ] Manual/bench (per Phase 6 Test Strategy exception — `index.html`/`app.js` DOM
+      structure is not host-tested): load the dashboard in a browser against a live or
+      stubbed `/api/history` response and confirm all three headings are present and
+      each names its metric + unit.
+- [ ] Code review: confirm no changes landed in `<section class="cards">`
+      (`index.html:16-34`) or its badge-deriving functions in `dashboard-logic.js`.
+
+#### AC-HAPPY-1: Water temperature chart is independently Y-scaled in °C with a time X-axis
+**Priority**: MUST
+**Given** `/api/history` returns a `temp_c` array with at least one finite value and a
+mix of `time_valid` entries
+**When** the temperature chart renders
+**Then** its Y axis carries numeric tick labels spanning only `temp_c`'s own finite
+min/max (never sharing a scale with `lux`, unlike today's `plotSeries`,
+`app.js:132-134`) and states "°C"; its X axis carries time tick labels derived only
+from entries where `time_valid` is true; a `null` entry in `temp_c` renders as a gap
+(pen lifted), never interpolated across and never coerced to 0
+**Verification**:
+- [ ] Node test (new, `test/web/dashboard-logic.test.mjs`): a pure tick/scale-selection
+      function (name TBD in creative) returns a temp-only range/tick set that is
+      unaffected by an out-of-range `lux` value in the same fixture.
+- [ ] Node test (new): a `null` entry in `temp_c` is excluded from the returned
+      min/max and does not appear as an interpolated tick.
+- [ ] Manual/bench: visually confirm the Y-axis label text renders as "°C" and a gap
+      appears as a break in the line, not a dip to 0 (canvas drawing is bench-verify
+      only, per systemPatterns.md Test Scope Preferences).
+
+#### AC-HAPPY-2: Ambient light chart is independently Y-scaled in lux with a time X-axis
+**Priority**: MUST
+**Given** `/api/history` returns a `lux` array with at least one finite value
+**When** the ambient light chart renders
+**Then** its Y axis carries numeric tick labels spanning only `lux`'s own finite
+min/max and states "lux"; its X axis matches the same time-tick behavior as
+AC-HAPPY-1; a `null` entry renders as a gap, never a plunge to 0
+**Verification**:
+- [ ] Node test (new): same tick/scale-selection function returns a lux-only
+      range/tick set unaffected by an out-of-range `temp_c` value in the same fixture.
+- [ ] Node test (new): a fully-null `lux` array (sensor offline for the whole window)
+      does not produce a fabricated 0–0 or 0–max range (mirrors the existing
+      `hasPlottableData`/`finiteRange` null-safety contract, `dashboard-logic.js:119-160`).
+- [ ] Manual/bench: visually confirm the Y-axis label text renders as "lux".
+
+#### AC-HAPPY-3: Water level chart plots the categorical FULL/MID/LOW/FAULT trace over time
+**Priority**: MUST
+**Given** `/api/history` returns a `level` array (always one of `FULL`/`MID`/`LOW`/
+`FAULT`/`UNKNOWN` per `level_json_name`, `lib/reading_json/src/reading_json.c:47-58` —
+never `null`)
+**When** the water level chart renders
+**Then** the trace shows each band as its own step/band segment aligned to the same
+time axis as the other two charts, and every band is distinguishable by text label (not
+color alone, per the Accessibility NFR already enforced for the level badge in
+`style.css:1-7` and `deriveLevelBadge`, `dashboard-logic.js:60-70`); `FAULT` is never
+visually or textually confusable with a neighboring band or with `UNKNOWN`
+**Verification**:
+- [ ] Node test (new): a pure level-series-to-band-segments function (name TBD in
+      creative) collapses consecutive identical bands into one segment and preserves
+      `FAULT` as its own distinct band, never merged into a neighbor.
+- [ ] Manual/bench: visually confirm FAULT is legible without relying on color (e.g. a
+      text label or distinct pattern), consistent with the existing text-first badge
+      convention.
+
+#### AC-HAPPY-4: Each chart's accessible text summary states its own unit and range without losing explicit offline reporting
+**Priority**: MUST
+**Given** a history response where one series has finite data and another is entirely
+null (e.g. `temp_c` populated, `lux` all null)
+**When** the per-chart accessible summaries are built (the successor to today's single
+combined `buildChartAriaLabel`, `dashboard-logic.js:187-218`)
+**Then** the temperature chart's summary states its numeric range and "°C"; the light
+chart's summary explicitly states it is offline rather than omitting a mention of light
+entirely (preserving the existing rule that an offline series is reported as offline,
+never silently dropped, `dashboard-logic.js:183-186`); the level chart's summary states
+its own text equivalent (e.g. bands present and any FAULT episodes) independent of the
+other two
+**Verification**:
+- [ ] Node test (new, `test/web/dashboard-logic.test.mjs`): extend/split
+      `buildChartAriaLabel`'s existing 6 tests (lines 246-297 of the current file) into
+      three per-chart summary functions; each MUST still pass an "offline is stated,
+      not omitted" assertion equivalent to the current
+      `buildChartAriaLabel omits a series that has no finite values` test
+      (`dashboard-logic.test.mjs:279-293`).
+- [ ] Manual/bench: verify with a screen reader (or the accessibility tree inspector)
+      that all three chart elements expose non-empty, distinct summaries.
+
+#### AC-ERROR-1: An all-null metric shows its own explicit "sensors offline" state, independently of the other two charts
+**Priority**: MUST
+**Given** one metric's history array is entirely null while the other two have data
+(e.g. temperature sensor unplugged, light and level still reporting)
+**When** the three charts render
+**Then** only the affected chart shows the "no data to plot — sensors offline"
+equivalent message in its own plot area; the other two charts render normally with
+their own data — no single shared empty-state message stands in for all three (this is
+the direct successor to the existing `hasPlottableData` branch, `app.js:107-121`, which
+today applies to one shared canvas)
+**Verification**:
+- [ ] Node test (new): a per-chart "has plottable data" predicate (successor to
+      `hasPlottableData`, `dashboard-logic.js:155-160`) evaluated independently per
+      metric returns `false` only for the all-null metric in a mixed fixture.
+- [ ] Manual/bench: confirm visually that exactly one of the three panels shows the
+      offline message while the other two show their charts.
+
+#### AC-ERROR-2: A history payload with zero entries shows "no readings recorded yet" per chart, distinct from the offline state
+**Priority**: MUST
+**Given** `/api/history` returns empty arrays (`n === 0`, pre-first-sample or freshly
+booted device)
+**When** the three charts render
+**Then** each chart shows its own "no readings recorded yet" message (never a blank
+plot area indistinguishable from a failed render — the reason this distinction exists
+at all, per the 2026-08-20 bench note in `app.js:103-106`), and this message is
+distinct in wording from the "sensors offline" message in AC-ERROR-1
+**Verification**:
+- [ ] Node test (new): the per-chart plottable-data / empty-state-selection logic
+      returns the "no readings recorded yet" case (not the "offline" case) when
+      `series.labels.length === 0`.
+- [ ] Manual/bench: confirm all three panels show the "no readings yet" wording, not a
+      blank canvas, on a freshly-booted device with an empty store.
+
+#### AC-ERROR-3: An unsynced clock renders the time axis honestly instead of printing 1970-era dates
+**Priority**: MUST
+**Given** `time_valid` is false for some or all history entries (no SNTP sync yet, no
+battery-backed RTC per `formatReadingTimestamp`, `dashboard-logic.js:23-37`)
+**When** any of the three charts builds its time axis
+**Then** no tick label is derived from a `time_valid: false` entry's raw epoch value
+(no near-1970 date is ever shown); the axis instead reflects only valid-timestamp
+ticks, or an explicit "clock not synced" state if none exist — mirroring the existing
+`poll-status` line behavior (`app.js:195`, "last updated (clock not synced)")
+**Verification**:
+- [ ] Node test (new): the time-axis tick-generation function, given an all-`time_valid:
+      false` fixture, returns zero derived date ticks (or an explicit
+      not-synced marker) rather than epoch-0-derived labels.
+- [ ] Node test (new): a mixed fixture (some entries valid, some not) only produces
+      ticks from the valid subset.
+
+#### AC-ASYNC-1: All three charts redraw in place on the next successful history fetch, with no page reload
+**Priority**: MUST
+**Given** the dashboard is open and has already rendered from a prior successful
+`/api/history` fetch
+**When** the next `/api/history` poll (`fetchHistory()`, `app.js:164-182`) completes
+successfully
+**Then** all three charts redraw using the newly fetched series, with no page reload
+required — worded as the next successful fetch's completion (an observable event),
+not a fixed elapsed time, per `_learned/planning-specification.md`'s guidance against
+cadence-based MUST thresholds
+**Verification**:
+- [ ] Manual/bench: trigger two successive successful `/api/history` responses with
+      different data and confirm all three charts visibly update between them without
+      a reload.
+- [ ] Code review: confirm the redraw call site still fires for all three charts from
+      the single `fetchHistory().then(...)` success path (`app.js:172-175`), not from
+      three independent, potentially-diverging fetch calls.
+
+#### AC-ASYNC-2: A failed history fetch leaves all three charts showing their last-known state
+**Priority**: MUST
+**Given** all three charts are showing data from a prior successful fetch
+**When** a subsequent `/api/history` fetch fails (network error, non-2xx status)
+**Then** none of the three charts are cleared, blanked, or reset — only the
+`poll-status` line reflects the failure (unchanged behavior from
+`fetchHistory()`'s existing `.catch` handler, `app.js:176-181`, extended to cover all
+three charts instead of one canvas)
+**Verification**:
+- [ ] Manual/bench: simulate a failed `/api/history` response (e.g. stop the mock
+      server mid-session) and confirm all three charts remain visibly unchanged while
+      the poll-status text reports the failure.
+
+### Scope Boundaries
+
+- **In scope**: Three per-metric charts (water temperature °C line, ambient light lux
+  line, water level FULL/MID/LOW/FAULT categorical trace) replacing the single
+  `#history-chart` canvas in `src/web/index.html`; per-chart labeled Y axis (unit-
+  stated) and shared-format time X axis; per-chart empty/offline states; per-chart
+  accessible text summaries preserving the existing "state offline explicitly, never
+  omit" contract; all new tick-generation / scale-selection / label-formatting /
+  summary-building logic added to `src/web/dashboard-logic.js` and covered by new
+  `test/web/dashboard-logic.test.mjs` tests, per the Pure-Logic / Device-Only Split.
+- **Out of scope**: Firmware, sensor driver, or reading-store changes (`/api/history`
+  and `/api/now` already carry everything needed); new retention windows, zoom, pan, or
+  range selection; any change to the three current-value tiles or their badges
+  (`#card-temp`/`#card-light`/`#card-level` and `deriveMetricBadge`/`deriveLevelBadge`);
+  adding a CDN dependency or a chart library of any kind.
+- **Dependencies**: `GET /api/history` and `GET /api/now` (existing, unchanged
+  contracts) via `src/http_api.c`; the existing four-asset embed pipeline
+  (`embed_web_assets.py` + `_binary_*` handlers in `src/http_api.c`) if the chosen
+  layout requires a new CSS/JS file — this is a real cost (touches the embed script and
+  the C route table for a firmware-side change) but is not automatically ruled out; it
+  is an open creative-phase trade-off, not a hard constraint against a new file.
+- **NFR implications**: Accessibility NFR (state conveyed by text, not color alone —
+  `style.css:1-7`) extends to all three charts' band/offline states and their
+  per-chart text summaries. No new user-input surface and no new external dependency
+  (LAN-only, no auth, per productBrief.md), so no new security review surface beyond
+  the existing one. No new persistence or endpoint, so no new performance profile
+  beyond the existing ~30s poll cadence.
+
+### Creative Exploration Needed
+
+Yes — four open questions, all named in the roadmap file
+(`memory-bank/roadmap/per-metric-dashboard-charts-with-labeled-axes.md`) and left open
+deliberately rather than guessed here:
+
+- **Tick generation**: interval selection ("nice" round steps), tick count, and
+  behavior on a single-value series, a mostly-null series, and a series whose range is
+  zero (e.g. a temperature series that never varies). This is pure logic and belongs in
+  `dashboard-logic.js`, but the specific algorithm is a design decision, not a
+  discoverable fact.
+- **Layout**: three separate `<canvas>` elements vs. stacked panels within one canvas
+  vs. inline SVG panels, and how the set reflows at phone width. `#history-chart` is
+  currently `width: 100%; height: auto` over a fixed 900×320 backing store
+  (`style.css:121-126`) — the replacement's responsive behavior is undetermined.
+- **Water level chart form**: step line, filled bands, or a lane/heat strip, and how
+  `FAULT` is distinguished from a legitimate band without relying on color alone.
+- **Canvas vs. inline SVG**: canvas is the established pattern here (used for the
+  current history chart, matches `deriveMetricBadge`/`deriveLevelBadge`'s DOM-free
+  logic split) and needs an explicit text summary regardless; SVG would put axis labels
+  directly in the DOM (free accessibility, no separate summary-building logic needed)
+  at the cost of departing from the established pattern and adding markup weight to an
+  embedded asset whose size affects the firmware image.
+
+None of these four questions block writing correctness-testable Acceptance Criteria
+above — each AC is worded to hold regardless of which answer `/bmb:creative` picks
+(e.g. AC-HAPPY-1 does not assume a specific tick algorithm, only that ticks exist and
+are unit-labeled and range-correct). They do block choosing concrete new function
+names, canvas/SVG element IDs, and CSS layout rules, which is exactly the boundary
+`/bmb:creative` exists to resolve before `/bmb:build`.
+
+## User Journey Definition
+
+Superseded by `## Specification` above, which carries the Invocation Method, Success
+Criteria, and Acceptance Criteria in their canonical form (`taxonomy://SPEC_SECTION_HEADERS`).
+The template's placeholder copies of those three subsections were removed rather than left
+reading "TBD by Spec Writer", which would have contradicted the completed spec for any agent
+reading this file later.
+
+## Implementation Plan
+
+### Overview
+
+Split the work along the seam the project already uses for the browser layer: every axis
+decision (what range, which ticks, what label text, what summary sentence, which empty-state
+message) becomes a pure function in `src/web/dashboard-logic.js` with Node tests, and `app.js`
+keeps only "draw these ticks at these pixels". That ordering also front-loads the risk: the
+tick/scale/summary contracts are the part that can be wrong in a way the eye won't catch, and
+they are exactly the part that is host-testable with no board attached.
+
+Phases 1–2 build and test the pure layer. Phases 3–4 replace the markup and the renderer, and
+are bench-verify-only (canvas drawing has no host test harness, per systemPatterns.md § Test
+Scope Preferences — the same exception `app.js` and `http_api.c` routing already carry).
+
+### Requirements
+
+#### Functional
+- Three independently Y-scaled charts (water temperature °C, ambient light lux, water level
+  categorical) replacing the single `#history-chart` canvas — AC-ENTRY-1, AC-HAPPY-1..3.
+- Numeric Y axis per chart with tick marks, numeric tick labels, and a stated unit; no cross-series
+  scale sharing — AC-HAPPY-1, AC-HAPPY-2.
+- Time X axis derived only from `time_valid: true` entries — AC-ERROR-3.
+- Water level rendered as a categorical band/step trace over FULL / MID / LOW / FAULT / UNKNOWN,
+  distinguishable without color — AC-HAPPY-3.
+- Per-chart accessible text summary that states an offline series as offline rather than omitting
+  it — AC-HAPPY-4.
+- Per-chart empty states, with "no readings recorded yet" (n === 0) worded distinctly from
+  "no data to plot — sensors offline" (all-null) — AC-ERROR-1, AC-ERROR-2.
+- Redraw all three on each successful `/api/history` poll; preserve last-known state on a failed
+  poll — AC-ASYNC-1, AC-ASYNC-2.
+
+#### Non-Functional
+- **No CDN / no chart library.** Every line of axis code ships in the firmware image.
+- **Pure-Logic / Device-Only Split** (systemPatterns.md § Design Patterns Used). Tick generation,
+  scale selection, label formatting, band segmentation, and summary building are pure and
+  Node-tested; only drawing and DOM writes live in `app.js`.
+- **Accessibility is text-first** (style.css:1-7). State is conveyed by text; color only reinforces.
+- **No `console.log` / `console.error`** in `src/web/*.js` — CLAUDE.md § Observability Standards
+  lists these as blocking violations, and neither existing web file uses them today.
+- **Flash/RAM budget.** Currently 30.4% flash / 32.6% RAM. Axis code grows the embedded assets;
+  per `_learned/build-verification.md`, a flash figure byte-identical to the prior build after
+  adding code is a failure signal, not a stability signal.
+
+### Component Analysis
+
+#### New Components
+- **Pure axis/scale layer** (inside `src/web/dashboard-logic.js`, not a new file): numeric
+  scale + tick selection, time-axis tick selection, level→band segmentation, per-chart summary
+  builders, per-chart empty-state classification. Exact function names are deferred to
+  `/bmb:creative` (they depend on the tick algorithm and the canvas-vs-SVG choice).
+- **New Node test suite** `test/web/chart-axes.test.mjs` — see § File Organization for why this is
+  a new file rather than more lines in the existing one.
+
+#### Affected Components
+- `src/web/dashboard-logic.js` — gains the pure axis layer. `hasPlottableData` (155-160) becomes
+  per-metric; `buildChartAriaLabel` (187-218) becomes three per-chart summaries. `finiteRange`
+  (119-140) is reused as-is and is the existing anchor for null-safety.
+- `src/web/app.js` — `drawChart` (87-162), `drawFrame` (77-85) and the inner `plotSeries`
+  (125-158) are replaced by per-chart renderers. `fetchHistory` (164-182) keeps its `.catch`
+  last-known-state behavior unchanged (AC-ASYNC-2).
+- `src/web/index.html` — `<section class="chart-section">` (36-48) replaced by three headed panels.
+- `src/web/style.css` — `#history-chart` rule (121-126) replaced by the new panel layout.
+- `test/web/dashboard-logic.test.mjs` — the 6 `buildChartAriaLabel` tests (246-297) and the 5
+  `hasPlottableData` tests are adapted to the per-chart successors.
+
+#### Component Interactions
+Unchanged data path: `fetchHistory()` → `GET /api/history?points=180` → `buildChartSeries`
+→ pure axis layer → per-chart renderers. No new endpoint, no new fetch, no new persistence.
+`/api/history` already emits `{t, time_valid, lux, temp_c, level}`
+(`lib/reading_json/src/reading_json.c:166-192`), and `level` is always a string, never `null`
+(`level_json_name`, same file 47-58).
+
+### Implementation Strategy
+
+Creative first (it decides the tick algorithm and the canvas-vs-SVG question, and #4 changes how
+much of Phase 2 exists at all), then pure logic bottom-up, then markup, then the renderer.
+
+1. Phase 1 — pure numeric + time axis logic, Node-tested.
+2. Phase 2 — pure level bands, per-chart summaries, per-chart empty-state selection, Node-tested.
+3. Phase 3 — markup + styling + the two numeric charts rendering with labeled axes.
+4. Phase 4 — level chart, all three empty/offline states, full entry→success walk.
+
+### Dependencies & Risks
+
+**Dependencies**
+- `/bmb:creative` (UI/UX + Algorithm) must complete before Phase 1 — it fixes the tick algorithm
+  and the rendering technology, which determine the Phase 1/2 function signatures.
+- `GET /api/history` and `GET /api/now` — existing, unchanged contracts.
+- Phases 3–4 verification requires a flashed ESP32-S3 board (see R3).
+
+**Risks**
+- **R1 — Canvas-vs-SVG is a one-way door that resizes Phase 2.** Canvas cannot expose pixels to
+  assistive tech, so it *requires* the per-chart text summaries of AC-HAPPY-4. Inline SVG puts
+  axis labels in the DOM, which could make most of that summary logic unnecessary — moving work
+  out of the pure layer and into markup. → **Mitigation**: `/bmb:creative` MUST answer this before
+  Phase 1 is scoped; do not begin Phase 2 against an unresolved rendering choice.
+- **R2 — "Adding an asset" is a firmware change, which the stated scope excludes.** The roadmap
+  says firmware is out of scope, but also that adding a 5th browser asset is "not ruled out". A new
+  asset touches `WEB_ASSETS` in `embed_web_assets.py:39-44`, the `extern` decls in
+  `include/http_api.h`, and the route table in `src/http_api.c` — that is firmware. → **Mitigation**:
+  default to extending the existing four assets; treat a new asset as an explicit scope amendment
+  recorded in the creative doc, not an incidental build-time decision.
+- **R3 — Phases 3–4 cannot be verified unattended.** `projectConfig.md` § Notes records that the
+  only PlatformIO test env targets `esp32-s3-devkitm-1`, so there is no host test for DOM/canvas
+  work. The pure layer (Phases 1–2) is fully Node-testable with no board, but Phases 3–4 need a
+  flash + browser session. → **Mitigation**: keep the phase boundary exactly at the pure/DOM seam
+  so the unattendable work is isolated and small; record bench results in the task file.
+- **R4 — Renderer/empty-state predicate drift.** `dashboard-logic.js:113-118` already warns that
+  `finiteRange`'s `isFinite` predicate and `plotSeries`'s must agree or the renderer and the
+  empty-state check disagree about whether there is anything to draw. Splitting one predicate into
+  three multiplies that risk. → **Mitigation**: the per-chart predicate and the per-chart renderer
+  must call the *same* pure function; no re-derived `isFinite` check in `app.js`.
+- **R5 — Silent flash growth.** Per `_learned/build-verification.md`, verify a non-trivial flash
+  delta after Phase 3/4 rather than trusting "build SUCCESS", and do a clean rebuild
+  (`rm -rf .pio/build && pio run`) if `WEB_ASSETS` changes, since the embed mechanism is the
+  documented-but-fragile workaround in techContext.md § Web Asset Embedding.
+
+### Guiding Principles Validation
+
+Checked against systemPatterns.md § Guiding Principles. Six of the eight are firmware-scoped and
+do not engage: Hardware Abstraction, One Owner Per Peripheral, Fail-Safe Defaults, No Blocking in
+`app_main`, Periodic Work Uses Absolute Deadlines, and Explicit Error Handling (`esp_err_t`) all
+concern device code this task does not touch. Two engage, one with a flagged deviation:
+
+- **Structured Logging** — honored, in its browser form. No `console.*` is added; failure is
+  reported as user-visible text (`poll-status`, per-chart empty states), which is what the existing
+  web layer already does.
+- **Configuration Is Not Hard-Coded** — ⚠ **flagged deviation, with justification.** The principle
+  says intervals, thresholds, and pin/timing values come from Kconfig or NVS, never literals. This
+  task will introduce presentation literals in `src/web/*` (tick counts, panel dimensions, chart
+  colors). **Justification**: the principle's stated rationale is "values a bench technician must
+  change are exactly the ones that must not require a code edit" — a tick count is not such a
+  value; it is a rendering choice with no bench-tunable meaning, and routing it through Kconfig
+  would make it a firmware rebuild away from a CSS tweak. There is also direct precedent in the
+  same layer: `POLL_INTERVAL_MS = 30000` (`app.js:20`) and `width="900" height="320"`
+  (`index.html:42`) are existing literals shipped in Phase 6. **Boundary**: this justification
+  covers presentation constants only. If a value emerges during `/bmb:creative` that a bench
+  operator would plausibly want to change (e.g. the retention window or the poll cadence), it does
+  NOT fall under this exemption and must go to Kconfig — but no such value is in scope, since
+  retention and cadence are both explicitly out of scope.
+
+No other deviation from a documented pattern is planned. The Pure-Logic / Device-Only Split is
+reused exactly as Phase 6 established it, not modified.
+
+### Observability Requirements
+- **Applies**: No. This is browser-side rendering in an embedded LAN dashboard — no HTTP/GraphQL/gRPC
+  handler, no background worker, no outbound service call, no new metric. OpenTelemetry, trace
+  context, and `LOG_*`/`OTEL_*` env vars are not applicable.
+- **The one binding rule that does apply**: no `console.log`/`console.error` in `src/web/*.js`
+  (CLAUDE.md § Observability Standards — blocking violation). Failure reporting stays where it is
+  today: user-visible text in the `poll-status` line and the per-chart empty states.
+
+### API Requirements
+- **REST API**: No. `GET /api/history` and `GET /api/now` are consumed unchanged; no route added,
+  removed, or reshaped. `src/http_api.c` is touched only in the R2 conditional (a new asset route).
+- **GraphQL API**: No — none in this project.
+
+### Work Items
+
+#### WI-per-metric-dashboard-charts-with-labeled-axes-001: Pure numeric scale + tick selection
+**Status**: Pending
+**Dependencies**: `/bmb:creative` (Algorithm — tick interval selection)
+**Files**: `src/web/dashboard-logic.js` (extend), `test/web/chart-axes.test.mjs` (new)
+**Implementation**: Per-metric finite range → "nice" tick set + unit-labeled tick strings. Reuse
+`finiteRange` (119-140). Must return no numeric range for an all-null series, and must handle
+single-value and zero-range series without fabricating a 0-based axis.
+
+#### WI-per-metric-dashboard-charts-with-labeled-axes-002: Pure time-axis tick selection
+**Status**: Pending
+**Dependencies**: WI-001
+**Files**: `src/web/dashboard-logic.js` (extend), `test/web/chart-axes.test.mjs` (extend)
+**Implementation**: Ticks derived only from `time_valid: true` entries; an all-invalid window
+yields an explicit not-synced state, never an epoch-0-derived label. Reuses the
+`formatReadingTimestamp` (31-37) honesty rule rather than re-deriving it.
+
+#### WI-per-metric-dashboard-charts-with-labeled-axes-003: Pure level→band segmentation
+**Status**: Pending
+**Dependencies**: `/bmb:creative` (UI/UX — level chart form)
+**Files**: `src/web/dashboard-logic.js` (extend), `test/web/chart-axes.test.mjs` (extend)
+**Implementation**: Run-length collapse of consecutive identical bands into segments; FAULT and
+UNKNOWN each preserved as their own band, never merged into a neighbor.
+
+#### WI-per-metric-dashboard-charts-with-labeled-axes-004: Per-chart summaries + empty-state selection
+**Status**: Pending
+**Dependencies**: WI-001, WI-003, `/bmb:creative` (canvas-vs-SVG — see R1)
+**Files**: `src/web/dashboard-logic.js` (extend), `test/web/dashboard-logic.test.mjs` (adapt the
+6 existing `buildChartAriaLabel` tests + the 5 `hasPlottableData` tests)
+**Implementation**: Three per-chart summary builders replacing `buildChartAriaLabel`, each
+preserving "offline is stated, never omitted". Per-metric plottable predicate replacing
+`hasPlottableData`, plus selection between the two distinct empty-state messages.
+
+#### WI-per-metric-dashboard-charts-with-labeled-axes-005: Markup + styling for three panels
+**Status**: Pending
+**Dependencies**: `/bmb:creative` (UI/UX — layout + reflow)
+**Files**: `src/web/index.html` (extend), `src/web/style.css` (extend)
+**Implementation**: Replace `<section class="chart-section">` (36-48) with three headed panels,
+each naming its metric and unit. Replace the `#history-chart` rule (style.css:121-126) with the
+chosen layout. Preserve the pre-script fallback text and the load order comment (50-55).
+
+#### WI-per-metric-dashboard-charts-with-labeled-axes-006: Per-chart renderers in app.js
+**Status**: Pending
+**Dependencies**: WI-001..005
+**Files**: `src/web/app.js` (extend)
+**Implementation**: Replace `drawChart`/`drawFrame`/`plotSeries` (77-162) with per-chart
+renderers that consume the pure layer's ticks and segments. Keep the null-gap pen-lift, keep
+`fetchHistory`'s `.catch` last-known-state path (176-181) untouched. No re-derived `isFinite`
+check (R4).
 
 ## Test Strategy
 
-TBD during Step 5 (Create Implementation Plan)
+### Approach
+- **Emphasis**: Unit-heavy on pure logic, per systemPatterns.md § Test Scope Preferences. All new
+  axis/scale/tick/band/summary logic is host-tested under Node; canvas drawing and DOM structure
+  are bench-verify-only (the standing Phase 6 exception that already covers `app.js`).
+- **Target test count**: **~26 new** (bringing `test/web/` from 25 to ~51).
+  *Justification for exceeding 20*: the count is driven by edge cases that are the actual defect
+  risk here, not by breadth. Each numeric axis needs the single-value, zero-range, all-null, and
+  mixed-null cases (4 shapes × 2 metrics), the time axis needs all-invalid / mixed / empty, band
+  segmentation needs FAULT-preserved / UNKNOWN / run-collapse / single / empty, and each of three
+  summaries needs both the range-stated and the offline-stated assertion. At ~200 SLOC of new pure
+  logic this is a ~0.13 test-to-SLOC ratio, in family with the existing `reading_store_core` 0.18.
+
+### File Organization
+- **New test files**: `test/web/chart-axes.test.mjs` — the new axis/scale/tick/band suite.
+  `.mjs` per systemPatterns.md § File Extension by Directory / Role (`test/web/` → `.mjs`).
+  A new file rather than more lines in the existing one: `dashboard-logic.test.mjs` is already 298
+  lines, +26 would roughly double it, and `node --test test/web/*.test.mjs` (techContext.md §
+  Testing) auto-discovers the glob, so a second suite costs nothing and adds no firmware weight.
+- **Extend existing**: `test/web/dashboard-logic.test.mjs` — adapt the 6 `buildChartAriaLabel`
+  tests (246-297) and the 5 `hasPlottableData` tests to their per-chart successors, rather than
+  leaving them asserting against deleted functions.
+
+### What NOT to Test
+- Canvas/SVG pixel output — no browser test harness exists in this project (systemPatterns.md
+  explicitly lists "the embedded HTML/CSS/JS" as not host-tested); bench-verified instead.
+- DOM wiring in `app.js` — same standing exception; it holds no interpretation logic by design.
+- `/api/history` payload shape and `level_json_name` — already covered by
+  `test/test_reading_json/`; this task consumes that contract, it does not change it.
+- The three current-value tiles and `deriveMetricBadge`/`deriveLevelBadge` — out of scope and
+  untouched; their existing tests must keep passing unmodified as the regression signal.
+- `formatReadingTimestamp`'s locale output — already tested; the time axis reuses it rather than
+  re-implementing date formatting.
+
+### Per-Phase Test Guidance
+- **Phase 1** — ~12 tests. Numeric scale/tick: independent per metric (a wild `lux` value must not
+  perturb the `temp_c` axis), single-value series, zero-range series, all-null series claims no
+  range, mixed-null excluded from min/max. Time axis: all-`time_valid:false` yields no
+  date-derived tick, mixed yields ticks only from the valid subset, empty window handled.
+- **Phase 2** — ~14 tests. Band segmentation: run-length collapse, FAULT never merged, UNKNOWN
+  distinct, single-sample, empty. Per-chart summaries: each of three states its own unit/range,
+  and an offline series is *stated* offline (the existing "never silently omit" assertion,
+  preserved per chart). Empty-state selection: `n === 0` → "no readings recorded yet";
+  all-null → "no data to plot — sensors offline"; has-data → neither.
+- **Phase 3** — 0 new host tests. Bench: load the dashboard, confirm three headed panels each
+  naming metric + unit, confirm the two numeric axes carry readable tick labels and correct units,
+  confirm phone-width reflow. Confirm the three value cards are visually unchanged. Re-run
+  `node --test test/web/*.test.mjs` (must stay green) and check a non-trivial flash delta (R5).
+- **Phase 4** — 0 new host tests. Bench, full entry→success walk: level trace renders with FAULT
+  legible without color; unplug one sensor and confirm only that panel shows offline while the
+  other two render; empty store shows "no readings recorded yet" on all three; two successive
+  successful polls visibly update all three without a reload; a failed poll leaves all three
+  intact with only `poll-status` changing.
 
 ## Implementation Roadmap
 
 ### New Source Files (pin path + extension)
-TBD during Step 5
+- [ ] `test/web/chart-axes.test.mjs` — new Node suite for the pure axis/scale/tick/band/summary
+      layer. Extension `.mjs` per systemPatterns.md § File Extension by Directory / Role.
+- [ ] extend `src/web/dashboard-logic.js` — the pure axis layer (no new file: keeps the embedded
+      asset count at four, avoiding the R2 firmware touch).
+- [ ] extend `src/web/app.js` — per-chart renderers.
+- [ ] extend `src/web/index.html` — three chart panels.
+- [ ] extend `src/web/style.css` — panel layout + reflow.
+- [ ] extend `test/web/dashboard-logic.test.mjs` — adapt the `buildChartAriaLabel` /
+      `hasPlottableData` tests to their per-chart successors.
+- [ ] **CONDITIONAL (only if `/bmb:creative` chooses a separate asset — see R2)**:
+      `src/web/chart.js` (`.js` per the same table) **plus** its `WEB_ASSETS` entry in
+      `embed_web_assets.py`, its `extern` decls in `include/http_api.h`, and its route in
+      `src/http_api.c`. Not the default path; adopting it is a recorded scope amendment.
 
 ### Phases
-TBD during Step 5
+- [ ] Phase 1: Pure numeric scale, tick selection, and time axis (Node-tested)
+- [ ] Phase 2: Pure level bands, per-chart summaries, per-chart empty states (Node-tested)
+- [ ] Phase 3: Three-panel markup + styling + the two numeric charts rendering (bench)
+- [ ] Phase 4: Level chart, all empty/offline states, full entry→success walk (bench)
 
 ## Creative Phases
 
-- [ ] Pending — set at Step 3.3
+Level 3 with LOW-confidence fields flagged by the Spec Writer → creative is **REQUIRED**.
+The four open questions from the roadmap map onto two creative agents:
+
+- [ ] **Algorithm Design** → `/bmb:creative` — tick interval selection ("nice" round steps), tick
+      count, and behavior on single-value, mostly-null, and zero-range series. Pure logic, but the
+      algorithm is a design decision rather than a discoverable fact.
+- [ ] **UI/UX Design** → `/bmb:creative` — (a) layout: three canvases vs stacked panels vs inline
+      SVG, and phone reflow; (b) water-level chart form: step line vs filled bands vs lane strip,
+      and how FAULT reads without color; (c) **canvas vs inline SVG** — resolve this first, it is
+      the one-way door in R1 and it determines how much of Phase 2 exists.
+
+Architecture Design is **not** flagged: the change is confined to `src/web/` and its host tests,
+reuses the established Pure-Logic / Device-Only Split unchanged, and adds no new module, endpoint,
+or data path. The one architectural question it does raise (does SVG move axis labels out of the
+pure layer and into markup?) is folded into the UI/UX canvas-vs-SVG decision above.
 
 ---
 
 ## Execution State
 
-**Build Status**: RUNNING
-**Current Phase**: PLAN
-**Current Step**: Task auto-provisioned from roadmap feature (Step 0.1)
-**Last Completed**: N/A
+**Build Status**: IDLE
+**Current Phase**: CREATIVE
+**Current Step**: Planning complete — awaiting `/bmb:creative`
+**Last Completed**: Step 6 (Finalize) — 2026-08-23
 **Can Resume**: NO
 
 ### Active Sub-Agents
@@ -132,3 +715,20 @@ TBD during Step 5
 ### Completed Steps
 - Step 0.0: Resolved `per-metric-dashboard-charts-with-labeled-axes` as a roadmap feature with no linked task
 - Step 0.1: Task file created; branch `feature/per-metric-dashboard-charts-with-labeled-axes` cut off `origin/main`
+- Step 0.1(5): `linked_tasks` backlink committed on `chore/banyan-admin` → PR #12 (routed there, not the feature branch: at the time the feature file existed only on that branch, so a feature-branch copy would have been an add/add conflict; PR #11 merged minutes later)
+- Step 0.2: Phase gate PASS — task file present on the feature branch tip
+- Step 0.5: Agent rules index current (4 `_learned/` rules, index at same commit)
+- Glossary loader: skipped — no `memory-bank/c4/` exists
+- Step 3: Spec Writer Agent (sonnet, `backends.plan: anthropic`) wrote § Specification
+- Step 3.2a: Taxonomy lint gate **CLEAN** on first pass — T-001 ✓ (10 ACs, all canonical), T-002 ✓, T-003 ✓ (10/10 Priority), T-004 ✓ (10/10 GWT), T-006 ✓, T-007 ✓; T-005/T-008 N/A (End-User Feature)
+- Step 3.2: Human review — **APPROVED**
+- Step 3.3: Creative REQUIRED — Algorithm Design + UI/UX Design flagged
+- Step 4: Codebase analysis — verified against `app.js`, `dashboard-logic.js`, `index.html`, `style.css`, `dashboard-logic.test.mjs`, `http_api.c`, `reading_json.c`, `embed_web_assets.py`
+- Step 5: Implementation plan, test strategy, work items, pinned new source files
+- Step 6: Validation gate passed; status → PLANNING_COMPLETE
+
+### Verification Baselines (recorded at plan time)
+- `node --test test/web/*.test.mjs` → **25 pass / 0 fail** (Node v24, zero npm deps).
+  This is the regression floor: the out-of-scope tile/badge tests must stay green untouched.
+- Firmware footprint at plan time: 30.4% flash / 32.6% RAM (systemPatterns.md). Per
+  `_learned/build-verification.md`, an unchanged flash figure after Phase 3/4 is a failure signal.
