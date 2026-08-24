@@ -45,7 +45,7 @@ Sensor Monitoring, Hydroponic Reservoir — ALL 6 PHASES COMPLETE (v1 feature-co
 │ Browser Layer (src/web/ + embed_web_assets.py) — Phase 6 BUILT          │
 │  ┌───────────────────────────────────────────────────────────────────┐  │
 │  │ dashboard-logic.js (pure) ◄─── BUILT (Phase 6), Host-testable    │  │
-│  │ ├─ formatReadingTimestamp()    └─ test/web/ (15 Node tests)      │  │
+│  │ ├─ formatReadingTimestamp()    └─ test/web/ (49 Node tests)      │  │
 │  │ ├─ deriveMetricBadge()                                           │  │
 │  │ ├─ deriveLevelBadge()                                            │  │
 │  │ ├─ isPreFirstSample()         app.js (device-only, Phase 6 BUILT)│  │
@@ -154,7 +154,7 @@ pure half. The pure half lives in `lib/<name>_core/` and is host-compilable; the
 - A state machine (pure) with a queue-owned task wrapper (device-only).
 - A JSON serializer (pure) with an HTTP chunked-send wrapper (device-only).
 - A sensor-read-history analyzer (pure) with a sampler-task wrapper (device-only).
-- A dashboard interpretation engine (pure) with DOM/fetch/timer wrapper (browser-device-only). **NEW, Phase 6**: `src/web/dashboard-logic.js` (pure: timestamp formatting, badge derivation, chart series building — zero `document`, `fetch`, `setInterval`, or browser APIs) + `src/web/app.js` (device-only: all DOM wiring, network polls, element updates). The pure half is **host-testable in Node** via `test/web/dashboard-logic.test.mjs` (15 tests, zero npm dependencies); the wrapper is browser-only and verified by manual testing. This is the **first extension of the pattern to the browser layer** and the **third concrete instance** overall (after `reading_store_core`/`reading_store` in Phase 1–3 and `reading_json` in Phase 5).
+- A dashboard interpretation engine (pure) with DOM/fetch/timer wrapper (browser-device-only). **NEW, Phase 6**: `src/web/dashboard-logic.js` (pure: timestamp formatting, badge derivation, chart series building — zero `document`, `fetch`, `setInterval`, or browser APIs) + `src/web/app.js` (device-only: all DOM wiring, network polls, element updates). The pure half is **host-testable in Node** via `test/web/*.test.mjs` (49 tests, zero npm dependencies); the wrapper is browser-only and verified by manual testing. This is the **first extension of the pattern to the browser layer** and the **third concrete instance** overall (after `reading_store_core`/`reading_store` in Phase 1–3 and `reading_json` in Phase 5).
 
 **Scope**: This pattern is specific to environments where off-device testing of pure logic is feasible but on-device integration requires coupling to subsystems (FreeRTOS, hardware I/O, or browser APIs) that cannot be easily emulated. It has now proven across three domains: embedded C (ring buffer, JSON serialization, sampler wiring) and browser JavaScript (dashboard interpretation).
 

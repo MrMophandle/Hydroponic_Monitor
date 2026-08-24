@@ -676,7 +676,10 @@ check (R4).
       `src/http_api.c`. Not the default path; adopting it is a recorded scope amendment.
 
 ### Phases
-- [ ] Phase 1: Pure numeric scale, tick selection, and time axis (Node-tested)
+- [x] Phase 1: Pure numeric scale, tick selection, and time axis (Node-tested) ✓
+      **Test Results**: 49/49 tests passing (25 baseline + 24 new in `test/web/chart-axes.test.mjs`)
+      **Code Review**: APPROVED WITH NITS (non-blocking: shared finite-predicate extraction,
+      `targetTickCount<=1` divide-by-zero guard — both deferred, safe for paths exercised today)
 - [ ] Phase 2: Pure level bands, per-chart summaries, per-chart empty states (Node-tested)
 - [ ] Phase 3: Three-panel markup + styling + the two numeric charts rendering (bench)
 - [ ] Phase 4: Level chart, all empty/offline states, full entry→success walk (bench)
@@ -762,13 +765,50 @@ and copy. Reconcile that seam before Phase 1 or the first build agent picks one 
 ## Execution State
 
 **Build Status**: IDLE
-**Current Phase**: CREATIVE → BUILD
-**Current Step**: Creative complete — awaiting `/bmb:build`
-**Last Completed**: Step 4.5 (Adversarial Design Critique) — 2026-08-23
+**Current Phase**: BUILD (Phase 1 of 4 complete)
+**Current Step**: Phase 1 committed — awaiting `/bmb:build` for Phase 2
+**Last Completed**: Phase 1: Pure numeric scale, tick selection, and time axis — 2026-08-23
 **Can Resume**: NO
 
 ### Active Sub-Agents
 (none)
+
+### Guard & Recovery Log
+(empty — commit guard PASSed Phase 1 on first try)
+
+**`/bmb:build` Phase 1 — 2026-08-23**
+- Clean-tree gate clean; worktree confirmed inline (no separate worktree — checked out directly
+  on `feature/per-metric-dashboard-charts-with-labeled-axes` at the project root)
+- Phase gate PASS (4 phases in Implementation Roadmap; both required creative phases `[x]`)
+- Step 3 TDD Agent (sonnet, `backends.tdd: anthropic`): RED confirmed (23 tests failing against
+  the algorithm design doc's pinned API), then GREEN. Added `buildMetricAxis`, `buildTimeAxis`,
+  `sampleX`, private `niceStep`/`formatTickLabel`/`clamp`/`formatEpoch` helpers, module constants
+  (`Y_AXIS_TARGET_TICKS`, `X_AXIS_TARGET_TICKS`, `MAX_LABEL_DECIMALS`), and additive `t`/`timeValid`
+  fields on `buildChartSeries`'s return, to `src/web/dashboard-logic.js`. New suite
+  `test/web/chart-axes.test.mjs` (24 tests). `app.js`/`index.html`/`style.css` untouched (out of
+  scope for this phase, confirmed by `git status`).
+- Step 7 Integration Verification (bmb:build-verifier-agent, haiku): `node --test
+  test/web/*.test.mjs` → 49/49 PASS, 0 fail. Build/lint: not applicable (no firmware files
+  changed this phase; no linter configured in this project).
+- Step 8 Code Review (bmb:build-code-reviewer-agent, sonnet): **APPROVED WITH NITS** (non-blocking).
+  Verified: three-state `buildMetricAxis` discrimination, zero-range/single-value padding, `-0`
+  normalization, `[3,7]` tick-count bound, `buildTimeAxis` structural impossibility of deriving a
+  tick from an invalid `time_valid` entry, single shared `sampleX` formula, byte-identical
+  `formatReadingTimestamp` regression, additive-only `buildChartSeries` fields, scope discipline
+  (only the two intended files changed), no `console.*` introduced, no new dependency. Two
+  Recommended (non-blocking) items logged for a future cleanup pass: (1) the finite-value
+  predicate is re-literaled in three places (`finiteRange`, the segment loop, the valid-time-index
+  loop) rather than sharing one helper — R4's drift risk is not fully closed, though currently
+  consistent; (2) `buildTimeAxis` divides by zero if a caller ever passes
+  `options.targetTickCount: 1` (unreachable today — no caller does this; `X_AXIS_TARGET_TICKS = 4`).
+- Step 9 Documentation (bmb:build-documentation-agent, haiku): added the `buildTimeAxis`
+  even-sample-spacing precondition (naming `src/sampler.c`/`xTaskDelayUntil()` as the responsible
+  module) to its doc comment; updated `systemPatterns.md`'s two stale "15 tests" references
+  (architecture diagram + Pure-Logic/Device-Only Split section) to 49 and to
+  `test/web/*.test.mjs`. No `techContext.md`/`productBrief.md` changes needed (no new command, no
+  new user-facing capability yet — charts don't render until Phase 3/4).
+- Step 10: this file updated (Phase 1 checkbox `[x]`, test/review results recorded, Execution
+  State current).
 
 ### Completed Steps
 - Step 0.0: Resolved `per-metric-dashboard-charts-with-labeled-axes` as a roadmap feature with no linked task
