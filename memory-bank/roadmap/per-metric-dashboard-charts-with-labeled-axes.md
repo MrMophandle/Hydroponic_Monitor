@@ -3,7 +3,7 @@ version: next
 status: planned
 priority: medium
 complexity: 3
-linked_tasks: []
+linked_tasks: [per-metric-dashboard-charts-with-labeled-axes]
 created: 2026-08-23
 ---
 
