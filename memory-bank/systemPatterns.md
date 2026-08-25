@@ -5,7 +5,7 @@ This file documents the architectural patterns, design patterns, and system stru
 > **Status (2026-08-20)**: **ALL 6 PHASES COMPLETE — PROJECT FEATURE-COMPLETE FOR v1.**
 > Phase 6 (web UI) just landed: `src/web/` browser assets + `embed_web_assets.py` build integration,
 > with pure-logic dashboard module (`dashboard-logic.js`) + thin device-only wrapper (`app.js`).
-> The project now has 54 total host-run tests (39 C native + 15 JS via Node), 32.6% RAM,
+> The project now has 106 total host-run tests (39 C native + 67 JS via Node), 32.6% RAM,
 > 30.4% flash. Phases 1–6 all locked in firmware: sampler task, HTTP API, JSON serializer,
 > SNTP time sync, Wi-Fi, device drivers, embedded web dashboard. Next phases (v2) would add
 > pump relay control, more sensors, or time-series UI enhancements. Do not modify Phases 1–5;
