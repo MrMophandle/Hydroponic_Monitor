@@ -4,9 +4,9 @@ This file documents the technology stack, infrastructure, and tooling used in th
 
 > **Status (2026-08-20)**: **Phase 6 FINAL PHASE complete (sensor-monitoring-dashboard).** All 6 phases of sensor-monitoring-dashboard
 > now built. Web UI layer (`src/web/` dashboard assets + `embed_web_assets.py` build integration)
-> implemented and tested. 54 total host-run tests: 39 native C tests (`pio test -e native`: 
+> implemented and tested. 106 total host-run tests: 39 native C tests (`pio test -e native`: 
 > 11 reading_store + 10 level_switches + 6 sensor_hub + 4 wifi_backoff + 6 reading_json + 2 
-> reading_store time_valid) + 15 new JS tests (`node --test test/web/*.test.mjs` for dashboard-logic.js).
+> reading_store time_valid) + 67 new JS tests (`node --test test/web/*.test.mjs` for dashboard-logic.js and chart axes).
 > Device build (`pio run -e esp32-s3-devkitm-1`): SUCCESS at 32.6% RAM (106,692 B), 30.4% flash
 > (957,040 B); 0 warnings. Security review PASS (no new user input, zero new dependencies). 
 > Code review APPROVED (comment-only fixes to stale docs in Phase 6, behavior unchanged).
