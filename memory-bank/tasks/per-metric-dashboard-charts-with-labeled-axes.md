@@ -680,7 +680,9 @@ check (R4).
       **Test Results**: 49/49 tests passing (25 baseline + 24 new in `test/web/chart-axes.test.mjs`)
       **Code Review**: APPROVED WITH NITS (non-blocking: shared finite-predicate extraction,
       `targetTickCount<=1` divide-by-zero guard — both deferred, safe for paths exercised today)
-- [ ] Phase 2: Pure level bands, per-chart summaries, per-chart empty states (Node-tested)
+- [x] Phase 2: Pure level bands, per-chart summaries, per-chart empty states (Node-tested) ✓
+      **Test Results**: 67/67 tests passing (49 baseline + 18 new in `test/web/chart-axes.test.mjs`)
+      **Code Review**: APPROVED (0 blocking, 0 recommended, 1 optional non-blocking style note)
 - [ ] Phase 3: Three-panel markup + styling + the two numeric charts rendering (bench)
 - [ ] Phase 4: Level chart, all empty/offline states, full entry→success walk (bench)
 
@@ -765,9 +767,9 @@ and copy. Reconcile that seam before Phase 1 or the first build agent picks one 
 ## Execution State
 
 **Build Status**: IDLE
-**Current Phase**: BUILD (Phase 1 of 4 complete)
-**Current Step**: Phase 1 committed — awaiting `/bmb:build` for Phase 2
-**Last Completed**: Phase 1: Pure numeric scale, tick selection, and time axis — 2026-08-23
+**Current Phase**: BUILD (Phase 2 of 4 complete)
+**Current Step**: Phase 2 committed — awaiting `/bmb:build` for Phase 3
+**Last Completed**: Phase 2: Pure level bands, per-chart summaries, per-chart empty states — 2026-08-24
 **Can Resume**: NO
 
 ### Active Sub-Agents
@@ -808,6 +810,50 @@ and copy. Reconcile that seam before Phase 1 or the first build agent picks one 
   `test/web/*.test.mjs`. No `techContext.md`/`productBrief.md` changes needed (no new command, no
   new user-facing capability yet — charts don't render until Phase 3/4).
 - Step 10: this file updated (Phase 1 checkbox `[x]`, test/review results recorded, Execution
+  State current).
+
+**`/bmb:build` Phase 2 — 2026-08-24**
+- Clean-tree gate clean; worktree confirmed inline (no separate worktree — checked out directly
+  on `feature/per-metric-dashboard-charts-with-labeled-axes` at the project root)
+- Phase gate PASS (4 phases in Implementation Roadmap; both required creative phases `[x]`)
+- Step 3 TDD Agent (sonnet, `backends.tdd: anthropic`): RED confirmed (18 new tests failing —
+  `TypeError: <fn> is not a function` against the not-yet-implemented API), then GREEN. Added
+  `buildLevelBands(series)`, `buildTempChartAriaLabel(series)`, `buildLightChartAriaLabel(series)`,
+  `buildLevelChartAriaLabel(series)` (plus private helpers `describeSampleCount`,
+  `buildMetricChartAriaLabel`) to `src/web/dashboard-logic.js`, purely additive — all previously
+  exported functions (including `buildChartAriaLabel`/`hasPlottableData`, still called by the
+  not-yet-rewritten `app.js`) are byte-unchanged. Design Critique reconciliations applied: **C2**
+  (level segmentation field named `bands`, not `segments`, avoiding collision with
+  `MetricAxis.segments`; the three summary builders consume `buildMetricAxis(...).state`/
+  `.dataRange` rather than re-deriving finiteness) and **C3** (an all-`UNKNOWN` level series is
+  `state: 'ok'` with one real band — only `level.length === 0` is the level chart's empty case,
+  since `level` is never `null`). Extended `test/web/chart-axes.test.mjs` (18 new tests: band
+  segmentation run-length collapse, FAULT/UNKNOWN never merged, single-sample, empty, the C3
+  all-UNKNOWN regression, `x0`/`x1` vs `sampleX` agreement, per-chart summary happy-path/offline/
+  n===0 cases, single-band vs multi-band level prose). `app.js`/`index.html`/`style.css` untouched
+  (out of scope for this phase, confirmed by `git status`).
+- Artifact seam check: both reported files (`src/web/dashboard-logic.js`,
+  `test/web/chart-axes.test.mjs`) confirmed present via `git status --porcelain` immediately after
+  the TDD agent returned — no recovery needed.
+- Step 7 Integration Verification (bmb:build-verifier-agent, haiku): `node --test
+  test/web/*.test.mjs` → 67/67 PASS, 0 fail. Build/lint: not applicable (no firmware files
+  changed this phase; no linter configured in this project).
+- Step 8 Code Review (bmb:build-code-reviewer-agent, sonnet): **APPROVED** (0 blocking, 0
+  recommended). Verified: diff to `dashboard-logic.js` is purely additive (0 lines removed/changed
+  in previously-exported functions), scope discipline (only the two intended files changed), no
+  `console.*`, no DOM/`window`/`fetch` reference, no new dependency, C2/C3 resolutions correctly
+  implemented and regression-tested. One optional (non-blocking) style note on the band
+  run-length-collapse loop's use of a closure variable vs. `bands[bands.length-1]` — not worth
+  changing.
+- Step 9 Documentation (bmb:build-documentation-agent, haiku): updated `systemPatterns.md`'s three
+  stale test-count references (architecture diagram annotation, Pure-Logic/Device-Only Split
+  section, status header "54 total .../15 JS") to 67 JS / 106 total; updated `techContext.md`'s
+  status-block test count the same way. No `productBrief.md` change (no new user-facing capability
+  yet — charts don't render until Phase 3/4). These doc commits landed as `2c204eb` and `8ea2601`
+  ahead of this phase's code commit (agent committed directly rather than leaving working-tree
+  changes for Step 11 — content verified correct; noted here for the record since it deviates from
+  the usual single-phase-commit shape).
+- Step 10: this file updated (Phase 2 checkbox `[x]`, test/review results recorded, Execution
   State current).
 
 ### Completed Steps

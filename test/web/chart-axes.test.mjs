@@ -4,15 +4,28 @@
 //   node --test test/web/*.test.mjs
 //
 // Phase 1 of per-metric-dashboard-charts-with-labeled-axes: pure numeric-axis
-// scale/tick logic and pure time-axis tick logic only. Markup/renderers/level
-// bands/summaries are later phases and are NOT covered here.
+// scale/tick logic and pure time-axis tick logic only.
+//
+// Phase 2 adds: pure level-band segmentation (buildLevelBands) and the three
+// per-chart accessible summary builders (buildTempChartAriaLabel,
+// buildLightChartAriaLabel, buildLevelChartAriaLabel). Markup/renderers are
+// later phases and are NOT covered here.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import DashboardLogic from '../../src/web/dashboard-logic.js';
 
-const { buildMetricAxis, sampleX, buildTimeAxis, buildChartSeries, formatReadingTimestamp } =
-  DashboardLogic;
+const {
+  buildMetricAxis,
+  sampleX,
+  buildTimeAxis,
+  buildChartSeries,
+  formatReadingTimestamp,
+  buildLevelBands,
+  buildTempChartAriaLabel,
+  buildLightChartAriaLabel,
+  buildLevelChartAriaLabel,
+} = DashboardLogic;
 
 // ---------------------------------------------------------------------------
 // buildMetricAxis — numeric axis scale/tick logic
@@ -262,4 +275,191 @@ test('buildChartSeries exposes t and timeValid pass-through fields for a known f
 test('formatReadingTimestamp is unaffected by the formatEpoch refactor', () => {
   assert.equal(formatReadingTimestamp(42, false), null);
   assert.equal(typeof formatReadingTimestamp(1700000000, true), 'string');
+});
+
+// ---------------------------------------------------------------------------
+// buildLevelBands — WI-003 level->band run-length segmentation
+// ---------------------------------------------------------------------------
+
+test('buildLevelBands collapses a mixed sequence into run-length bands', () => {
+  const series = { level: ['FULL', 'FULL', 'FULL', 'MID', 'MID', 'LOW'] };
+  const result = buildLevelBands(series);
+  assert.equal(result.state, 'ok');
+  assert.equal(result.emptyMessage, null);
+  assert.equal(result.bands.length, 3);
+  assert.equal(result.bands[0].level, 'FULL');
+  assert.equal(result.bands[0].count, 3);
+  assert.equal(result.bands[1].level, 'MID');
+  assert.equal(result.bands[1].count, 2);
+  assert.equal(result.bands[2].level, 'LOW');
+  assert.equal(result.bands[2].count, 1);
+});
+
+test('buildLevelBands never merges FAULT into an adjacent band even when bands look similar', () => {
+  const series = { level: ['MID', 'MID', 'FAULT', 'MID', 'MID'] };
+  const result = buildLevelBands(series);
+  assert.equal(result.bands.length, 3);
+  assert.equal(result.bands[0].level, 'MID');
+  assert.equal(result.bands[1].level, 'FAULT');
+  assert.equal(result.bands[2].level, 'MID');
+});
+
+test('buildLevelBands keeps UNKNOWN distinct from FAULT (never merged together)', () => {
+  const series = { level: ['UNKNOWN', 'UNKNOWN', 'FAULT', 'FAULT'] };
+  const result = buildLevelBands(series);
+  assert.equal(result.bands.length, 2);
+  assert.equal(result.bands[0].level, 'UNKNOWN');
+  assert.equal(result.bands[0].count, 2);
+  assert.equal(result.bands[1].level, 'FAULT');
+  assert.equal(result.bands[1].count, 2);
+});
+
+test('buildLevelBands produces a single one-sample band for a single-sample series', () => {
+  const series = { level: ['FULL'] };
+  const result = buildLevelBands(series);
+  assert.equal(result.state, 'ok');
+  assert.equal(result.bands.length, 1);
+  assert.equal(result.bands[0].count, 1);
+  assert.equal(result.bands[0].startIndex, 0);
+  assert.equal(result.bands[0].endIndex, 0);
+});
+
+test('buildLevelBands returns no-samples state for an empty level array', () => {
+  const result = buildLevelBands({ level: [] });
+  assert.equal(result.state, 'no-samples');
+  assert.deepStrictEqual(result.bands, []);
+  assert.equal(result.emptyMessage, 'no readings recorded yet');
+});
+
+// C3 regression: an all-UNKNOWN series (n > 0) is a real, renderable band —
+// NOT the empty state. Only level.length === 0 is 'no-samples' for the level
+// chart, since `level` is never null per level_json_name.
+test('buildLevelBands treats an all-UNKNOWN series as state ok with one UNKNOWN band, not empty (C3)', () => {
+  const series = { level: ['UNKNOWN', 'UNKNOWN', 'UNKNOWN'] };
+  const result = buildLevelBands(series);
+  assert.equal(result.state, 'ok');
+  assert.equal(result.emptyMessage, null);
+  assert.equal(result.bands.length, 1);
+  assert.equal(result.bands[0].level, 'UNKNOWN');
+  assert.equal(result.bands[0].count, 3);
+});
+
+test('buildLevelBands band x0/x1 match the exported sampleX for a concrete fixture', () => {
+  const series = { level: ['FULL', 'FULL', 'MID', 'LOW', 'LOW'] };
+  const n = series.level.length;
+  const result = buildLevelBands(series);
+  for (const band of result.bands) {
+    assert.equal(band.x0, sampleX(band.startIndex, n));
+    assert.equal(band.x1, sampleX(band.endIndex, n));
+  }
+  assert.equal(result.bands[0].startIndex, 0);
+  assert.equal(result.bands[0].endIndex, 1);
+  assert.equal(result.bands[1].startIndex, 2);
+  assert.equal(result.bands[1].endIndex, 2);
+  assert.equal(result.bands[2].startIndex, 3);
+  assert.equal(result.bands[2].endIndex, 4);
+});
+
+// ---------------------------------------------------------------------------
+// buildTempChartAriaLabel / buildLightChartAriaLabel — WI-004 per-chart
+// accessible summaries for the two numeric metrics.
+// ---------------------------------------------------------------------------
+
+test('buildTempChartAriaLabel reports "no readings recorded yet" for an empty series', () => {
+  const series = { labels: [], temp_c: [] };
+  assert.equal(buildTempChartAriaLabel(series), 'Water temperature chart. No readings recorded yet.');
+});
+
+test('buildTempChartAriaLabel states offline (not omitted) when every temp_c entry is null', () => {
+  const labels = new Array(180).fill('x');
+  const series = { labels: labels, temp_c: new Array(180).fill(null) };
+  assert.equal(
+    buildTempChartAriaLabel(series),
+    'Water temperature chart over 180 samples. No plottable data. Water temperature is offline.'
+  );
+});
+
+test('buildTempChartAriaLabel reports min-to-max range on a happy-path fixture', () => {
+  const labels = new Array(180).fill('x');
+  const temp_c = new Array(180).fill(20);
+  temp_c[0] = 8.2;
+  temp_c[1] = 24.6;
+  const series = { labels: labels, temp_c: temp_c };
+  const label = buildTempChartAriaLabel(series);
+  assert.match(label, /^Water temperature chart over 180 samples\. 8\.2 to 24\.6 °C\.$/);
+});
+
+test('buildLightChartAriaLabel reports "no readings recorded yet" for an empty series', () => {
+  const series = { labels: [], lux: [] };
+  assert.equal(buildLightChartAriaLabel(series), 'Ambient light chart. No readings recorded yet.');
+});
+
+test('buildLightChartAriaLabel states offline (not omitted) when every lux entry is null', () => {
+  const labels = new Array(24).fill('x');
+  const series = { labels: labels, lux: new Array(24).fill(null) };
+  assert.equal(
+    buildLightChartAriaLabel(series),
+    'Ambient light chart over 24 samples. No plottable data. Ambient light is offline.'
+  );
+});
+
+// A single-sample series has min === max; describeRange (reused, not
+// reimplemented per the task's contract) collapses that to one value
+// rather than "X to X", and the sample-count clause uses the singular form.
+test('buildLightChartAriaLabel reports a single value (not "X to X") for a 1-sample fixture, singular', () => {
+  const series = { labels: ['x'], lux: [150.4] };
+  assert.equal(buildLightChartAriaLabel(series), 'Ambient light chart over 1 sample. 150.4 lux.');
+});
+
+// ---------------------------------------------------------------------------
+// buildLevelChartAriaLabel — WI-004 per-chart accessible summary for level
+// (categorical; always state 'ok' once n > 0, per C3 — no offline case).
+// ---------------------------------------------------------------------------
+
+test('buildLevelChartAriaLabel reports "no readings recorded yet" for an empty series', () => {
+  const series = { labels: [], level: [] };
+  assert.equal(buildLevelChartAriaLabel(series), 'Water level chart. No readings recorded yet.');
+});
+
+test('buildLevelChartAriaLabel describes a single-band series with "for all N samples"', () => {
+  const level = new Array(60).fill('FULL');
+  const series = { labels: new Array(60).fill('x'), level: level };
+  assert.equal(
+    buildLevelChartAriaLabel(series),
+    'Water level chart over 60 samples. FULL for all 60 samples.'
+  );
+});
+
+// C3 regression: all-UNKNOWN is a single real band, described the same way
+// as any other single-band series — not an offline/empty sentence.
+test('buildLevelChartAriaLabel describes an all-UNKNOWN series as a real band (C3)', () => {
+  const level = new Array(10).fill('UNKNOWN');
+  const series = { labels: new Array(10).fill('x'), level: level };
+  assert.equal(
+    buildLevelChartAriaLabel(series),
+    'Water level chart over 10 samples. UNKNOWN for all 10 samples.'
+  );
+});
+
+test('buildLevelChartAriaLabel describes a multi-band series with first/then/most-recent prose', () => {
+  const level = [].concat(
+    new Array(40).fill('FULL'),
+    new Array(68).fill('MID'),
+    new Array(60).fill('LOW'),
+    new Array(12).fill('FAULT')
+  );
+  const series = { labels: new Array(180).fill('x'), level: level };
+  assert.equal(
+    buildLevelChartAriaLabel(series),
+    'Water level chart over 180 samples. FULL for the first 40 samples, then MID, then LOW, then FAULT for the most recent 12 samples.' // (also confirms every non-first band is prefixed "then")
+  );
+});
+
+test('buildLevelChartAriaLabel uses singular "sample" for a first/last band of count 1', () => {
+  const level = ['FULL', 'MID', 'MID', 'MID', 'LOW'];
+  const series = { labels: new Array(5).fill('x'), level: level };
+  assert.equal(
+    buildLevelChartAriaLabel(series),
+    'Water level chart over 5 samples. FULL for the first 1 sample, then MID, then LOW for the most recent 1 sample.'
+  );
 });

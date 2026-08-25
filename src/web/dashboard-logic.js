@@ -495,6 +495,160 @@
     return parts.join(' ');
   }
 
+  /**
+   * WI-003: run-length collapse of a series' categorical `level` array into
+   * contiguous bands, for the level chart's band-strip renderer (Phase 3/4).
+   *
+   * Named `bands` (not `segments`, per Design Critique C2) to avoid
+   * colliding with MetricAxis.segments, a different concept — MetricAxis
+   * segments are finite-numeric plotted runs (split by nulls/gaps), while a
+   * level band is a run of identical categorical readings and always
+   * covers the whole series (level is never null — see level_json_name).
+   *
+   * Only EXACT consecutive equal `level` strings collapse into one band:
+   * FAULT and UNKNOWN each survive as their own band and are never merged
+   * into a neighboring band, even when neighboring bands are otherwise
+   * identical on both sides (AC-ERROR-2's "no visual confusion" guarantee,
+   * carried through to the data model this early rather than left to the
+   * renderer to reconstruct).
+   *
+   * Per Design Critique C3: an all-UNKNOWN series (n > 0) is `state: 'ok'`
+   * with a single UNKNOWN band — a real, renderable reading (the
+   * pre-first-sample lifecycle state), NOT the empty case. The level chart's
+   * only empty case is `level.length === 0`, since `level` is never null.
+   */
+  function buildLevelBands(series) {
+    var level = (series && series.level) || [];
+    var n = level.length;
+
+    if (n === 0) {
+      return { state: 'no-samples', bands: [], emptyMessage: 'no readings recorded yet' };
+    }
+
+    var bands = [];
+    var current = null;
+    for (var i = 0; i < n; i++) {
+      var value = level[i];
+      if (current && current.level === value) {
+        current.endIndex = i;
+        current.count++;
+      } else {
+        current = { level: value, startIndex: i, endIndex: i, count: 1 };
+        bands.push(current);
+      }
+    }
+
+    for (var b = 0; b < bands.length; b++) {
+      bands[b].x0 = sampleX(bands[b].startIndex, n);
+      bands[b].x1 = sampleX(bands[b].endIndex, n);
+    }
+
+    return { state: 'ok', bands: bands, emptyMessage: null };
+  }
+
+  /**
+   * Shared "N sample(s)" pluralization, matching the convention already
+   * established by the superseded buildChartAriaLabel.
+   */
+  function describeSampleCount(n) {
+    return n + (n === 1 ? ' sample' : ' samples');
+  }
+
+  /**
+   * Builds one numeric metric's (temp or light) per-chart accessible
+   * summary. Successor to buildChartAriaLabel (WI-004, per Design Critique
+   * C2): consumes buildMetricAxis's state/dataRange/emptyMessage instead of
+   * re-deriving finiteness, so the axis builder and the summary can never
+   * disagree about whether a series has plottable data. An offline series
+   * is always stated as offline, never silently omitted — same honesty
+   * rule buildChartAriaLabel established.
+   */
+  function buildMetricChartAriaLabel(series, values, subject, unit) {
+    var labels = (series && series.labels) || [];
+    var n = labels.length;
+    if (n === 0) {
+      return subject + ' chart. No readings recorded yet.';
+    }
+
+    var sampleCount = describeSampleCount(n);
+    var axis = buildMetricAxis(values, { unit: unit });
+
+    if (axis.state === 'no-finite-values') {
+      return (
+        subject +
+        ' chart over ' +
+        sampleCount +
+        '. No plottable data. ' +
+        subject +
+        ' is offline.'
+      );
+    }
+
+    return subject + ' chart over ' + sampleCount + '. ' + describeRange(axis.dataRange, unit) + '.';
+  }
+
+  /**
+   * Water-temperature chart's accessible summary. See
+   * buildMetricChartAriaLabel for the shared shape/rules.
+   */
+  function buildTempChartAriaLabel(series) {
+    return buildMetricChartAriaLabel(series, series && series.temp_c, 'Water temperature', '°C');
+  }
+
+  /**
+   * Ambient-light chart's accessible summary. See buildMetricChartAriaLabel
+   * for the shared shape/rules.
+   */
+  function buildLightChartAriaLabel(series) {
+    return buildMetricChartAriaLabel(series, series && series.lux, 'Ambient light', 'lux');
+  }
+
+  /**
+   * Water-level chart's accessible summary (WI-004). Unlike the two numeric
+   * charts, level has no offline/no-plottable-data case (per Design
+   * Critique C3: `level` is never null, and UNKNOWN is a reported value,
+   * not absence of data) — once n > 0, buildLevelBands is always
+   * `state: 'ok'`, so the only branch here is n === 0 vs. describing the
+   * band sequence in prose.
+   *
+   * A single band (including an all-UNKNOWN series) reads "LEVEL for all N
+   * samples". Multiple bands read as a first/then.../most-recent chain: the
+   * first band's count is called out ("for the first K samples"), the last
+   * band's count is called out ("for the most recent K samples"), and every
+   * band in between is named with no count ("then LEVEL") — a screen-reader
+   * user gets the shape of the sequence without a wall of numbers for
+   * every transition.
+   */
+  function buildLevelChartAriaLabel(series) {
+    var labels = (series && series.labels) || [];
+    var n = labels.length;
+    if (n === 0) {
+      return 'Water level chart. No readings recorded yet.';
+    }
+
+    var sampleCount = describeSampleCount(n);
+    var result = buildLevelBands(series);
+    var bands = result.bands;
+
+    if (bands.length === 1) {
+      return 'Water level chart over ' + sampleCount + '. ' + bands[0].level + ' for all ' + sampleCount + '.';
+    }
+
+    var clauses = [];
+    for (var i = 0; i < bands.length; i++) {
+      var band = bands[i];
+      if (i === 0) {
+        clauses.push(band.level + ' for the first ' + describeSampleCount(band.count));
+      } else if (i === bands.length - 1) {
+        clauses.push('then ' + band.level + ' for the most recent ' + describeSampleCount(band.count));
+      } else {
+        clauses.push('then ' + band.level);
+      }
+    }
+
+    return 'Water level chart over ' + sampleCount + '. ' + clauses.join(', ') + '.';
+  }
+
   var DashboardLogic = {
     formatReadingTimestamp: formatReadingTimestamp,
     formatAxisTimestamp: formatAxisTimestamp,
@@ -507,6 +661,10 @@
     buildMetricAxis: buildMetricAxis,
     buildTimeAxis: buildTimeAxis,
     sampleX: sampleX,
+    buildLevelBands: buildLevelBands,
+    buildTempChartAriaLabel: buildTempChartAriaLabel,
+    buildLightChartAriaLabel: buildLightChartAriaLabel,
+    buildLevelChartAriaLabel: buildLevelChartAriaLabel,
   };
 
   if (typeof module !== 'undefined' && module.exports) {
