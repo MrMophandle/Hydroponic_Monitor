@@ -824,7 +824,20 @@ and copy. Reconcile that seam before Phase 1 or the first build agent picks one 
   commit `cc9a2b8` landed ahead of this phase's code commit (same pattern as Phase 2).
 - Step 10: this file updated (Phase 3 checkbox `[x]`, test/review results recorded, Execution
   State current).
-- Step 11: commit guard — see verdict below.
+- Step 11: commit guard (`commit-guard.sh`, ref `ac4aa5b`) — **FAIL**: `C2 TDD-invariant: 1
+  production file(s) committed with 0 test files — src/web/app.js` (`prod=1 test=0`; `index.html`/
+  `style.css` are not `SRC_RE`-matched, so only `app.js` counts). This is the pre-declared,
+  reviewed exception from this task's own Test Strategy (`## Test Strategy` § Per-Phase Test
+  Guidance: "Phase 3 — 0 new host tests... bench-verify-only, the standing Phase 6 exception that
+  already covers app.js") — Phase 3 adds zero new interpretive logic to `app.js` (confirmed by
+  Code Review): all axis/tick/segment computation is already pure-tested in `dashboard-logic.js`
+  from Phases 1-2, and `app.js`'s new code is Canvas 2D draw calls + fraction→pixel arithmetic
+  only, matching the same no-host-test precedent the *existing* (pre-task) `app.js` already
+  carries in this codebase. `commit-guard.sh` has no override flag by design ("the only override
+  for a genuinely test-free-but-has-source phase is a HUMAN, via escalation") — per the build
+  orchestrator's Commit Guard rule, this is NOT self-waived. Escalated to the human via
+  `/bmb:build`'s `DECISION_NEEDED` return; commit `ac4aa5b` made locally on
+  `feature/per-metric-dashboard-charts-with-labeled-axes` but **NOT pushed** pending the decision.
 
 **`/bmb:build` Phase 1 — 2026-08-23**
 - Clean-tree gate clean; worktree confirmed inline (no separate worktree — checked out directly
