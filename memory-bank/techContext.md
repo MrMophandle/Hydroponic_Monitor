@@ -7,10 +7,17 @@ This file documents the technology stack, infrastructure, and tooling used in th
 > implemented and tested. 106 total host-run tests: 39 native C tests (`pio test -e native`: 
 > 11 reading_store + 10 level_switches + 6 sensor_hub + 4 wifi_backoff + 6 reading_json + 2 
 > reading_store time_valid) + 67 new JS tests (`node --test test/web/*.test.mjs` for dashboard-logic.js and chart axes).
-> Device build (`pio run -e esp32-s3-devkitm-1`): SUCCESS at 32.6% RAM (106,692 B), 30.4% flash
-> (957,040 B); 0 warnings. Security review PASS (no new user input, zero new dependencies). 
+> Device build (`pio run -e esp32-s3-devkitm-1`): SUCCESS at 32.6% RAM (106,692 B), 31.3% flash
+> (985,858 B); 0 warnings. Security review PASS (no new user input, zero new dependencies). 
 > Code review APPROVED (comment-only fixes to stale docs in Phase 6, behavior unchanged).
 > **Project feature-complete for v1: all 6 phases locked into firmware image.**
+>
+> **Status (2026-08-25)**: **per-metric-dashboard-charts-with-labeled-axes Phase 3 COMPLETE.** Three independent per-metric chart panels
+> (temp, light, level placeholder) replacing the single 900×320 overlaid canvas. Pure-Logic/Device-Only Split
+> maintained: `dashboard-logic.js` provides `buildMetricAxis()`, `buildTimeAxis()`, and per-chart aria-label builders; 
+> `app.js` draws the charts using pre-computed axis data. All 67 JS tests still pass (`node --test test/web/*.test.mjs`).
+> Device build (`pio run -e esp32-s3-devkitm-1`): SUCCESS at 32.6% RAM (106,692 B), 31.3% flash
+> (985,858 B); 0 warnings.
 >
 > **Status (2026-08-21)**: **onboard-status-led Phase 2 COMPLETE.** Extended `lib/device_status/` 
 > with reachability-fact tracking (`status_report_wifi()`, `status_report_http()`, `status_snapshot()`) 
@@ -333,6 +340,29 @@ The workaround manually:
 - The workaround is specific to the `espidf` framework under PlatformIO on this version and is not a portable general-purpose pattern.
 
 ## Recent Technology Changes
+
+### 2026-08-25 - per-metric-dashboard-charts-with-labeled-axes Phase 3: Three Independent Per-Metric Chart Panels
+- **What Changed**:
+  - **Three independent chart canvases** replace the single 900×320 overlaid canvas: `#chart-temp` (900×220, °C), `#chart-light` (900×220, lux), `#chart-level` (900×140, placeholder for Phase 4).
+  - **Per-chart axes rendered**: Each chart draws its own Y gridlines + tick labels, X time-axis tick labels, and an optional caption. Axis data comes from pre-computed `buildMetricAxis()` and `buildTimeAxis()` pure functions (already tested in Phases 1–2 of this task).
+  - **Per-chart empty states**: Each chart displays its own "no readings recorded yet" or "no data to plot — sensors offline" message when the metric has no plottable data, replacing the single combined empty state.
+  - **Per-chart aria-labels**: Accessibility labels are now `buildTempChartAriaLabel()`, `buildLightChartAriaLabel()` (Phase 3 update to dashboard-logic.js), passing the series for time-window context.
+  - **Markup & styling**: `src/web/index.html` reorganized with three `.chart-panel` sections (one per metric), each with heading, canvas, and caption. `src/web/style.css` updated for per-panel layout and grid reflow.
+  - **No new JS/CSS files**: Assets remain embedded: one HTML, one CSS, one app.js, one dashboard-logic.js (Phase 6's original four files).
+  - **No test changes this phase**: All 67 existing JS tests for dashboard-logic.js pass unchanged. No new pure-logic functions tested (the axis functions were tested in Phases 1–2). app.js rendering is bench-verify-only (no host tests per Phase 6 Test Strategy exception).
+- **Reason**:
+  - Single overlaid canvas prevented independent axis scales, leaving the relative heights and crossing points as artifacts of two unrelated normalizations. Per-chart axes make values readable and relatable to their numeric context (°C, lux).
+  - Water level was stored in `/api/history` and survived `buildChartSeries()` but was never plotted. A level trace over time makes drain rate, refill events, and FAULT episodes legible — information the current single-value badge cannot express.
+  - Each chart now owns its failure mode: a metric can be offline while another is live, and each chart displays its own empty state without affecting the others.
+- **Impact**:
+  - Flash: 31.3% (985,858 B) — +0.9% vs. Phase 1/2 baseline (30.4%, 957,040 B). Cost of expanded markup/styling in embedded assets.
+  - RAM: 32.6% (106,692 B) — unchanged.
+  - Device build verification: `pio run -e esp32-s3-devkitm-1` SUCCESS, 0 warnings. Clean rebuild (`rm -rf .pio/build && pio run`) confirms assets still embed and link correctly.
+  - `pio test -e native` — 39 C tests unchanged; `node --test test/web/*.test.mjs` — 67 JS tests for dashboard-logic.js unchanged.
+- **Migration Notes**: 
+  - The three-panel UI is live immediately on device: `GET /` now renders three charts instead of one.
+  - Existing bookmarks to `http://hydroponics.local/` or device IP load the new layout with no refresh required (assets embedded in image).
+  - No database/schema changes; `/api/history` and `/api/now` endpoints unchanged.
 
 ### 2026-08-21 - onboard-status-led Phase 3 (FINAL): WS2812 RGB LED Driver & Tick Task
 - **What Changed**:

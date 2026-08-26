@@ -396,6 +396,38 @@ To populate this section, run `/bmb:c4`. The command builds a complete bottom-up
 
 ## Recent Architecture Changes
 
+### 2026-08-25 - per-metric-dashboard-charts-with-labeled-axes Phase 3: Three Independent Per-Metric Chart Panels
+- **What Changed**:
+  - **Dashboard canvas architecture**: Replaced single 900×320 overlaid canvas (`#history-chart`) with three independent per-metric canvases:
+    - `#chart-temp` — Water temperature (900×220), Y axis in °C with labeled gridlines
+    - `#chart-light` — Ambient light (900×220), Y axis in lux with labeled gridlines
+    - `#chart-level` — Water level (900×140), placeholder for Phase 4 band-strip rendering
+  - **Per-chart axis rendering**: Each chart independently draws Y gridlines + tick labels (using pre-computed `buildMetricAxis()` output from dashboard-logic.js), X time-axis labels, and an optional caption. No shared plot area; each axis owns its scale.
+  - **Per-chart empty states**: Each chart displays its own empty-state message ("no readings recorded yet" or "no data to plot — sensors offline") instead of a single combined message. Failure in one metric does not affect others visually.
+  - **Per-chart accessibility**: `buildTempChartAriaLabel()` and `buildLightChartAriaLabel()` (updated pure functions in dashboard-logic.js) provide per-metric aria-labels with time-window context, replacing the single combined `buildChartAriaLabel()`.
+  - **Markup & styling changes**: 
+    - `src/web/index.html` reorganized with three `.chart-panel` sections (one per metric), each with heading, canvas, and caption paragraph.
+    - `src/web/style.css` updated for per-panel grid layout and reflow at viewport breaks.
+  - **Pure-Logic/Device-Only Split maintained**: All axis computation (`buildMetricAxis`, `buildTimeAxis`, label generation) remains in dashboard-logic.js (testable on Node). All DOM wiring and canvas rendering remains in app.js (device-only). The split is stronger now: app.js does not recompute scales or gaps — it walks pre-computed segments and ticks.
+  - **No architectural cost**: No new browser libraries, no new embedded assets (four files remain: HTML, CSS, app.js, dashboard-logic.js). No new external dependencies.
+- **Reason**:
+  - Single overlaid canvas shared plot area but not scale: each series normalized to its own min/max, so relative heights and crossing points were artifacts, not data. Three independent axes make readings relatable to their numeric context.
+  - Water level was stored but never plotted (Phase 6 intentionally excluded it). A level trace over time reveals drain rate, refill events, and FAULT episodes — information no single-value badge can express.
+  - Per-chart empty states make failure modes explicit: a chart can be offline while others are live, and each chart owns its own rendering of that state.
+- **Trade-offs**: Markup and CSS footprint grew to support three-column layout and per-panel styling. Flash increased by 0.9% (30.4% → 31.3%) due to expanded embedded assets. Acceptable tradeoff for per-metric readability.
+- **Affected Components**: 
+  - `src/web/index.html` (markup reorganization)
+  - `src/web/style.css` (per-panel layout)
+  - `src/web/dashboard-logic.js` (added `buildTempChartAriaLabel()`, `buildLightChartAriaLabel()` pure functions)
+  - `src/web/app.js` (replaced single `drawChart()` with `drawMetricChart()`, updated `drawFrame()` → `drawEmptyState()` with message parameter, removed `plotSeries()` helper)
+  - No changes to C firmware, test framework, or build system.
+- **Verified**:
+  - `pio test -e native` — 39 C tests, unchanged.
+  - `node --test test/web/*.test.mjs` — 67 JS tests for dashboard-logic.js, unchanged (axis functions already tested in Phases 1–2; new aria-label builders tested as part of existing suite).
+  - `pio run -e esp32-s3-devkitm-1` — SUCCESS, 0 warnings. RAM 32.6% (106,692 B), flash 31.3% (985,858 B).
+  - Clean rebuild confirms asset embedding and linking works.
+- **Scope Lock**: Pure-Logic/Device-Only Split pattern continues to apply at the browser layer. Future phases (4+) will add level chart rendering and potentially zoom/pan UX without rearchitecting the axis contract.
+
 ### 2026-08-20 - Phase 6 (FINAL): Web UI Dashboard + Pure-Logic Browser Layer
 - **What Changed**:
   - **Pure-Logic / Device-Only Split extended to browser**: `src/web/dashboard-logic.js` contains all
