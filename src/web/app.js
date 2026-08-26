@@ -27,10 +27,10 @@
   var levelValueEl = document.getElementById('level-value');
   var levelBadgeEl = document.getElementById('level-badge');
   var pollStatusEl = document.getElementById('poll-status');
-  var chartCanvas = document.getElementById('history-chart');
+  var tempCaptionEl = document.getElementById('chart-temp-caption');
+  var lightCaptionEl = document.getElementById('chart-light-caption');
 
   var haveFirstSample = false;
-  var latestSeries = null;
 
   function setBadge(el, badge) {
     el.textContent = badge.text;
@@ -73,8 +73,10 @@
 
   /* A baseline and left edge so the plot area always reads as a chart, even
    * when it holds no series. Without this the empty state is a bare message
-   * floating in white space. */
-  function drawFrame(ctx, w, h) {
+   * floating in white space. Mirrors the frame + centered-text idiom the
+   * single-chart renderer used before the Phase 3 split into per-metric
+   * panels. */
+  function drawEmptyState(ctx, w, h, message) {
     ctx.strokeStyle = '#d1d5db';
     ctx.lineWidth = 1;
     ctx.beginPath();
@@ -82,83 +84,138 @@
     ctx.lineTo(10, h - 10);
     ctx.lineTo(w - 10, h - 10);
     ctx.stroke();
+
+    ctx.fillStyle = '#6b7280';
+    ctx.font = '14px system-ui, -apple-system, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(message, w / 2, h / 2);
+    ctx.textAlign = 'start';
+    ctx.textBaseline = 'alphabetic';
   }
 
-  function drawChart(series) {
-    if (!chartCanvas || !chartCanvas.getContext) {
+  /* Plot-area margins, reserving room for Y tick labels (left) and X tick
+   * labels (bottom). Chosen to comfortably fit the widest tick strings this
+   * dashboard produces ("-12.3" for temp, four-digit lux values) at the
+   * 14px tick font below. */
+  var PLOT_MARGIN_LEFT = 45;
+  var PLOT_MARGIN_RIGHT = 10;
+  var PLOT_MARGIN_TOP = 10;
+  var PLOT_MARGIN_BOTTOM = 25;
+  var TICK_FONT = '14px system-ui, -apple-system, sans-serif';
+
+  /**
+   * Draws one numeric metric's (water temperature or ambient light) chart:
+   * frame, Y gridlines + tick labels, the line trace (walking the axis's
+   * already gap-split segments — never re-deriving gap handling here), and
+   * X tick labels / caption from the shared time axis. `series` is the
+   * dashboard-wide series (for the aria-label + time axis); `values` is this
+   * metric's own array within it.
+   */
+  function drawMetricChart(canvas, series, values, opts) {
+    if (!canvas || !canvas.getContext) {
       return;
     }
-    var ctx = chartCanvas.getContext('2d');
-    var w = chartCanvas.width;
-    var h = chartCanvas.height;
+    var ctx = canvas.getContext('2d');
+    var w = canvas.width;
+    var h = canvas.height;
     ctx.clearRect(0, 0, w, h);
 
-    /* A canvas cannot expose its pixels to assistive tech, so the chart's
-     * only screen-reader representation is this label. Refreshed on every
-     * draw so it never describes stale data. */
-    chartCanvas.setAttribute('aria-label', window.DashboardLogic.buildChartAriaLabel(series));
+    var ariaLabel =
+      opts.title === 'Water Temperature'
+        ? window.DashboardLogic.buildTempChartAriaLabel(series)
+        : window.DashboardLogic.buildLightChartAriaLabel(series);
+    canvas.setAttribute('aria-label', ariaLabel);
 
-    var n = series.labels.length;
+    var axis = window.DashboardLogic.buildMetricAxis(values, { unit: opts.unit, title: opts.title });
+    var timeAxis = window.DashboardLogic.buildTimeAxis(series);
 
-    /* Empty state. Previously this function cleared the canvas and returned,
-     * leaving a blank 900x320 box that looked identical to a failed render —
-     * which is exactly what the bench saw with both sensors unplugged
-     * (2026-08-20). Say so explicitly instead. */
-    if (n === 0 || !window.DashboardLogic.hasPlottableData(series)) {
-      drawFrame(ctx, w, h);
-      ctx.fillStyle = '#6b7280';
-      ctx.font = '14px system-ui, -apple-system, sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(
-        n === 0 ? 'no readings recorded yet' : 'no data to plot — sensors offline',
-        w / 2,
-        h / 2
-      );
-      ctx.textAlign = 'start';
-      ctx.textBaseline = 'alphabetic';
+    if (axis.state !== 'ok') {
+      drawEmptyState(ctx, w, h, axis.emptyMessage);
+      if (opts.captionEl) {
+        opts.captionEl.textContent = '';
+      }
       return;
     }
 
-    drawFrame(ctx, w, h);
+    var plotLeft = PLOT_MARGIN_LEFT;
+    var plotRight = w - PLOT_MARGIN_RIGHT;
+    var plotTop = PLOT_MARGIN_TOP;
+    var plotBottom = h - PLOT_MARGIN_BOTTOM;
+    var plotWidth = plotRight - plotLeft;
+    var plotHeight = plotBottom - plotTop;
 
-    function plotSeries(values, color) {
-      var finite = values.filter(function (v) {
-        return typeof v === 'number' && isFinite(v);
-      });
-      if (finite.length === 0) {
-        return;
-      }
-      var min = Math.min.apply(null, finite);
-      var max = Math.max.apply(null, finite);
-      var range = max - min || 1;
+    function toPx(fx, fy) {
+      return { x: plotLeft + fx * plotWidth, y: plotBottom - fy * plotHeight };
+    }
 
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 2;
+    // Frame: left edge + baseline of the plot area.
+    ctx.strokeStyle = '#d1d5db';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(plotLeft, plotTop);
+    ctx.lineTo(plotLeft, plotBottom);
+    ctx.lineTo(plotRight, plotBottom);
+    ctx.stroke();
+
+    // Y gridlines + tick labels.
+    ctx.font = TICK_FONT;
+    ctx.fillStyle = '#6b7280';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    for (var i = 0; i < axis.tickPositions.length; i++) {
+      var ty = toPx(0, axis.tickPositions[i]).y;
+      ctx.strokeStyle = '#e5e7eb';
+      ctx.lineWidth = 1;
       ctx.beginPath();
+      ctx.moveTo(plotLeft, ty);
+      ctx.lineTo(plotRight, ty);
+      ctx.stroke();
+      ctx.fillText(axis.tickLabels[i], plotLeft - 6, ty);
+    }
+    ctx.textAlign = 'start';
+    ctx.textBaseline = 'alphabetic';
 
-      var drawing = false;
-      for (var i = 0; i < n; i++) {
-        var v = values[i];
-        var x = (i / Math.max(n - 1, 1)) * (w - 20) + 10;
-        if (v === null || v === undefined || !isFinite(v)) {
-          // Gap: lift the pen so we never interpolate across a null.
-          drawing = false;
-          continue;
-        }
-        var y = h - 10 - ((v - min) / range) * (h - 20);
-        if (!drawing) {
-          ctx.moveTo(x, y);
-          drawing = true;
+    // Line trace: iterate the already gap-split segments — moveTo at the
+    // start of each run, lineTo for the rest. Never merge across segments
+    // (the "lift the pen, never interpolate across a null" contract).
+    ctx.strokeStyle = opts.color;
+    ctx.lineWidth = 2;
+    for (var s = 0; s < axis.segments.length; s++) {
+      var segment = axis.segments[s];
+      ctx.beginPath();
+      for (var p = 0; p < segment.length; p++) {
+        var px = toPx(segment[p].x, segment[p].y);
+        if (p === 0) {
+          ctx.moveTo(px.x, px.y);
         } else {
-          ctx.lineTo(x, y);
+          ctx.lineTo(px.x, px.y);
         }
       }
       ctx.stroke();
     }
 
-    plotSeries(series.temp_c, '#b8420b');
-    plotSeries(series.lux, '#1c7c3c');
+    // X tick labels / clock-not-synced placeholder.
+    ctx.font = TICK_FONT;
+    ctx.fillStyle = '#6b7280';
+    ctx.textBaseline = 'top';
+    if (timeAxis.state === 'ok') {
+      for (var x = 0; x < timeAxis.ticks.length; x++) {
+        var tick = timeAxis.ticks[x];
+        var txPos = toPx(tick.x, 0).x;
+        ctx.textAlign = x === 0 ? 'left' : x === timeAxis.ticks.length - 1 ? 'right' : 'center';
+        ctx.fillText(tick.label, txPos, plotBottom + 6);
+      }
+    } else if (timeAxis.state === 'clock-not-synced') {
+      ctx.textAlign = 'center';
+      ctx.fillText('clock not synced', (plotLeft + plotRight) / 2, plotBottom + 6);
+    }
+    ctx.textAlign = 'start';
+    ctx.textBaseline = 'alphabetic';
+
+    if (opts.captionEl) {
+      opts.captionEl.textContent = timeAxis.state === 'ok' ? timeAxis.caption : '';
+    }
   }
 
   function fetchHistory() {
@@ -170,8 +227,19 @@
         return resp.json();
       })
       .then(function (historyPayload) {
-        latestSeries = window.DashboardLogic.buildChartSeries(historyPayload);
-        drawChart(latestSeries);
+        var series = window.DashboardLogic.buildChartSeries(historyPayload);
+        drawMetricChart(document.getElementById('chart-temp'), series, series.temp_c, {
+          unit: '°C',
+          title: 'Water Temperature',
+          color: '#b8420b',
+          captionEl: tempCaptionEl,
+        });
+        drawMetricChart(document.getElementById('chart-light'), series, series.lux, {
+          unit: 'lux',
+          title: 'Ambient Light',
+          color: '#1c7c3c',
+          captionEl: lightCaptionEl,
+        });
       })
       .catch(function (err) {
         // Leave the last-known chart visible; only the status line reflects

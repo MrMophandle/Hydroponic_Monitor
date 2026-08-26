@@ -33,19 +33,41 @@
     </div>
   </section>
 
-  <section class="chart-section">
-    <h2>Last 24 Hours</h2>
-    <!-- role="img" + aria-label make the canvas visible to assistive tech at
-         all; without them it did not appear in the accessibility tree. app.js
-         rewrites aria-label on every draw (DashboardLogic.buildChartAriaLabel).
-         The inner text is the pre-script fallback. -->
-    <canvas id="history-chart" width="900" height="320" role="img"
-            aria-label="24-hour history chart. Loading readings.">
-      24-hour history chart. Your browser does not support canvas; the current
-      readings are listed above.
+  <!-- role="img" + aria-label make each canvas visible to assistive tech at
+       all; without them it did not appear in the accessibility tree. app.js
+       rewrites aria-label on every draw (DashboardLogic.buildTempChartAriaLabel
+       / buildLightChartAriaLabel). The inner text is the pre-script fallback. -->
+  <section class="chart-panel" id="panel-temp">
+    <h2>Water Temperature (°C)</h2>
+    <canvas id="chart-temp" width="900" height="220" role="img"
+            aria-label="Water temperature chart. Loading readings.">
+      Water temperature chart. Your browser does not support canvas; the current
+      reading is listed above.
     </canvas>
-    <p class="poll-status" id="poll-status">loading&hellip;</p>
+    <p class="chart-caption" id="chart-temp-caption"></p>
   </section>
+
+  <section class="chart-panel" id="panel-light">
+    <h2>Ambient Light (lux)</h2>
+    <canvas id="chart-light" width="900" height="220" role="img"
+            aria-label="Ambient light chart. Loading readings.">
+      Ambient light chart. Your browser does not support canvas; the current
+      reading is listed above.
+    </canvas>
+    <p class="chart-caption" id="chart-light-caption"></p>
+  </section>
+
+  <section class="chart-panel" id="panel-level">
+    <h2>Water Level</h2>
+    <canvas id="chart-level" width="900" height="140" role="img"
+            aria-label="Water level chart. Rendering arrives in a later phase.">
+      Water level chart. Your browser does not support canvas; the current
+      reading is listed above.
+    </canvas>
+    <p class="chart-caption" id="chart-level-caption"></p>
+  </section>
+
+  <p class="poll-status" id="poll-status">loading&hellip;</p>
 
   <!-- Load order per systemPatterns.md Pure-Logic/Device-Only Split:
        the pure logic module first, then the DOM-only wiring that depends

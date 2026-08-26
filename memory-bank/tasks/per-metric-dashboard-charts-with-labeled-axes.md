@@ -683,7 +683,14 @@ check (R4).
 - [x] Phase 2: Pure level bands, per-chart summaries, per-chart empty states (Node-tested) ✓
       **Test Results**: 67/67 tests passing (49 baseline + 18 new in `test/web/chart-axes.test.mjs`)
       **Code Review**: APPROVED (0 blocking, 0 recommended, 1 optional non-blocking style note)
-- [ ] Phase 3: Three-panel markup + styling + the two numeric charts rendering (bench)
+- [x] Phase 3: Three-panel markup + styling + the two numeric charts rendering (bench) ✓
+      **Test Results**: 67/67 tests passing (unchanged baseline — 0 new host tests per plan;
+      Phase 3 consumes already-tested `buildMetricAxis`/`buildTimeAxis` pure outputs, no new
+      dashboard-logic.js logic). Firmware build: SUCCESS, RAM 32.6% (unchanged), Flash 31.3%
+      (985,858 B, +0.9% vs. Phase 1 baseline — expected, 3 embedded assets grew).
+      **Code Review**: APPROVED WITH NITS (non-blocking: aria-label dispatch via string-compare
+      on `opts.title` is a bit brittle — prefer an explicit `opts.metric` key; a stale-comment
+      trim suggestion — both deferred, safe as shipped).
 - [ ] Phase 4: Level chart, all empty/offline states, full entry→success walk (bench)
 
 ## Creative Phases
@@ -767,16 +774,57 @@ and copy. Reconcile that seam before Phase 1 or the first build agent picks one 
 ## Execution State
 
 **Build Status**: IDLE
-**Current Phase**: BUILD (Phase 2 of 4 complete)
-**Current Step**: Phase 2 committed — awaiting `/bmb:build` for Phase 3
-**Last Completed**: Phase 2: Pure level bands, per-chart summaries, per-chart empty states — 2026-08-24
+**Current Phase**: BUILD (Phase 3 of 4 complete)
+**Current Step**: Phase 3 committed — awaiting `/bmb:build` for Phase 4
+**Last Completed**: Phase 3: Three-panel markup + styling + the two numeric charts rendering — 2026-08-25
 **Can Resume**: NO
 
 ### Active Sub-Agents
 (none)
 
 ### Guard & Recovery Log
-(empty — commit guard PASSed Phase 1 on first try)
+(empty through Phase 2 — commit guard PASSed on first try both times)
+
+**`/bmb:build` Phase 3 — 2026-08-25**
+- Clean-tree gate clean; feature branch rebased onto `origin/main` (2 commits, roadmap
+  `linked_tasks` backlink only, no conflicts) before build
+- Phase gate PASS (4 phases in Implementation Roadmap; both required creative phases `[x]`)
+- Step 3 TDD Agent (sonnet, `backends.tdd: anthropic`): no RED→GREEN cycle — this phase's Test
+  Strategy plans 0 new host tests (all pure axis/tick logic already built+tested in Phases 1-2;
+  `buildMetricAxis`/`buildTimeAxis` already return fully-computed fractional tick positions and
+  gap-split segments, so Phase 3's `app.js` work is 100% fraction→pixel arithmetic + Canvas 2D
+  calls, no new interpretive logic to extract). Replaced the single 900×320 `#history-chart`
+  with three `<section class="chart-panel">`s (`#chart-temp` 900×220, `#chart-light` 900×220,
+  `#chart-level` 900×140 placeholder, Phase 4's job) in `index.html`; added `.chart-panel`/
+  `.chart-caption` styling in `style.css`; replaced `drawChart`/`drawFrame`/`plotSeries` with
+  `drawEmptyState`/`drawMetricChart` in `app.js`, wired for temp+light only. Confirmed
+  `dashboard-logic.js` and all `test/web/*.test.mjs` untouched; regression re-run 67/67 green
+  before and after.
+- Artifact seam check: all three reported files (`app.js`, `index.html`, `style.css`) confirmed
+  present via `git status --porcelain` immediately after the TDD agent returned — no recovery
+  needed.
+- Step 7 Integration Verification (bmb:build-verifier-agent, haiku): `node --test
+  test/web/*.test.mjs` → 67/67 PASS. `pio run -e esp32-s3-devkitm-1` → SUCCESS, RAM 32.6%
+  (106,708 B, unchanged), Flash 31.3% (985,858 B, +0.9% vs. the 30.4% Phase 1 baseline — expected,
+  3 embedded assets grew). `node --check src/web/app.js` → syntax OK. No linter configured.
+- Step 8 Code Review (bmb:build-code-reviewer-agent, sonnet): **APPROVED WITH NITS** (0 blocking).
+  Verified: scope discipline (only the 3 intended files changed, `<section class="cards">`
+  untouched), Pure-Logic/Device-Only Split held (no new decisions leaked into `app.js`),
+  gap/null-handling preserved via `axis.segments`' pre-split runs, per-chart aria-label refreshed
+  every draw, no `console.*`, design-doc conformance (exact heading text, canvas ids/dimensions,
+  shared `.chart-panel canvas` rule, `chart-caption` slot per Design Critique C5, >=14px tick font
+  per Design Critique C4, single shared `#poll-status`), `#chart-level` correctly left undrawn,
+  no security surface change. One Recommended (non-blocking): aria-label builder dispatch via
+  string-compare on `opts.title` is a bit brittle — prefer an explicit `opts.metric` key; deferred.
+  One Optional: a stale-history comment could be trimmed next touch.
+- Step 9 Documentation (bmb:build-documentation-agent, haiku): updated `techContext.md`'s status
+  line and `systemPatterns.md`'s Recent Architecture Changes with the new three-canvas dashboard
+  structure and the Flash 31.3%/RAM 32.6% figures; verified inline comments current; no
+  `productBrief.md` change (Phase 4 still needed before the level chart ships user-visibly). Doc
+  commit `cc9a2b8` landed ahead of this phase's code commit (same pattern as Phase 2).
+- Step 10: this file updated (Phase 3 checkbox `[x]`, test/review results recorded, Execution
+  State current).
+- Step 11: commit guard — see verdict below.
 
 **`/bmb:build` Phase 1 — 2026-08-23**
 - Clean-tree gate clean; worktree confirmed inline (no separate worktree — checked out directly
