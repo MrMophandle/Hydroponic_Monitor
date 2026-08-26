@@ -29,6 +29,7 @@
   var pollStatusEl = document.getElementById('poll-status');
   var tempCaptionEl = document.getElementById('chart-temp-caption');
   var lightCaptionEl = document.getElementById('chart-light-caption');
+  var levelCaptionEl = document.getElementById('chart-level-caption');
 
   var haveFirstSample = false;
 
@@ -218,6 +219,161 @@
     }
   }
 
+  /* Maps each known level string to the CSS custom property that already
+   * colors its badge (style.css:16-22), so the level chart and the level
+   * badge can never visually drift apart. An unrecognized string falls back
+   * to the same "--level-unknown" var deriveLevelBadge already falls back
+   * to for its CSS class, mirroring that known/fallback shape exactly. */
+  var LEVEL_COLOR_VARS = {
+    FULL: '--level-full',
+    MID: '--level-mid',
+    LOW: '--level-low',
+    FAULT: '--level-fault',
+    UNKNOWN: '--level-unknown',
+  };
+
+  function levelColor(levelStr) {
+    var varName = LEVEL_COLOR_VARS[levelStr] || '--level-unknown';
+    var value = getComputedStyle(document.documentElement).getPropertyValue(varName);
+    return value ? value.trim() : '#6b6f6d';
+  }
+
+  /* Diagonal-hatch fill for a rect, clipped to that rect so the strokes
+   * never bleed into a neighboring band. FAULT uses a denser, more opaque
+   * hatch than UNKNOWN so the two states are never visually confusable with
+   * each other (AC-HAPPY-3), on top of already having different labels and
+   * fill colors. */
+  function drawHatch(ctx, x0, y0, x1, y1, spacing, alpha) {
+    var w = x1 - x0;
+    var h = y1 - y0;
+    if (w <= 0 || h <= 0) {
+      return;
+    }
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x0, y0, w, h);
+    ctx.clip();
+    ctx.strokeStyle = 'rgba(0, 0, 0, ' + alpha + ')';
+    ctx.lineWidth = 1;
+    var diag = w + h;
+    for (var off = -h; off < diag; off += spacing) {
+      ctx.beginPath();
+      ctx.moveTo(x0 + off, y1);
+      ctx.lineTo(x0 + off + h, y0);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  /**
+   * Draws the water-level chart: a single-row band/step strip, one segment
+   * per contiguous run of identical `level` readings from
+   * DashboardLogic.buildLevelBands, sharing the same time (X) axis as the
+   * two numeric charts. FAULT and UNKNOWN segments additionally carry a
+   * diagonal-hatch fill (denser for FAULT) so they are never distinguished
+   * by color alone. `series` is the dashboard-wide series (for the
+   * aria-label + time axis).
+   */
+  function drawLevelChart(canvas, series, opts) {
+    if (!canvas || !canvas.getContext) {
+      return;
+    }
+    var ctx = canvas.getContext('2d');
+    var w = canvas.width;
+    var h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+
+    canvas.setAttribute('aria-label', window.DashboardLogic.buildLevelChartAriaLabel(series));
+
+    var result = window.DashboardLogic.buildLevelBands(series);
+
+    if (result.state !== 'ok') {
+      drawEmptyState(ctx, w, h, result.emptyMessage);
+      if (opts.captionEl) {
+        opts.captionEl.textContent = '';
+      }
+      return;
+    }
+
+    var timeAxis = window.DashboardLogic.buildTimeAxis(series);
+
+    var plotLeft = PLOT_MARGIN_LEFT;
+    var plotRight = w - PLOT_MARGIN_RIGHT;
+    var plotTop = PLOT_MARGIN_TOP;
+    var plotBottom = h - PLOT_MARGIN_BOTTOM;
+    var plotWidth = plotRight - plotLeft;
+    var plotHeight = plotBottom - plotTop;
+
+    // Band strip occupies ~60% of the plot area's height, vertically
+    // centered, leaving breathing room above/below for the FAULT hatch and
+    // the time-tick row.
+    var stripHeight = plotHeight * 0.6;
+    var stripTop = plotTop + (plotHeight - stripHeight) / 2;
+    var stripBottom = stripTop + stripHeight;
+
+    var bands = result.bands;
+
+    function toX(fx) {
+      return plotLeft + fx * plotWidth;
+    }
+
+    for (var i = 0; i < bands.length; i++) {
+      var band = bands[i];
+      var left = i === 0 ? 0 : (bands[i - 1].x1 + band.x0) / 2;
+      var right = i === bands.length - 1 ? 1 : (band.x1 + bands[i + 1].x0) / 2;
+      var x0 = toX(left);
+      var x1 = toX(right);
+
+      ctx.fillStyle = levelColor(band.level);
+      ctx.fillRect(x0, stripTop, x1 - x0, stripHeight);
+
+      if (band.level === 'FAULT') {
+        drawHatch(ctx, x0, stripTop, x1, stripBottom, 6, 0.35);
+      } else if (band.level === 'UNKNOWN') {
+        drawHatch(ctx, x0, stripTop, x1, stripBottom, 12, 0.15);
+      }
+
+      ctx.font = TICK_FONT;
+      var labelWidth = ctx.measureText(band.level).width;
+      if (labelWidth + 8 <= x1 - x0) {
+        ctx.fillStyle = '#ffffff';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(band.level, (x0 + x1) / 2, stripTop + stripHeight / 2);
+        ctx.textAlign = 'start';
+        ctx.textBaseline = 'alphabetic';
+      }
+    }
+
+    // Strip frame, matching the numeric charts' plot-area border idiom.
+    ctx.strokeStyle = '#d1d5db';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(plotLeft, stripTop, plotWidth, stripHeight);
+
+    // X tick labels / clock-not-synced placeholder — shared time base, same
+    // idiom as drawMetricChart.
+    ctx.font = TICK_FONT;
+    ctx.fillStyle = '#6b7280';
+    ctx.textBaseline = 'top';
+    if (timeAxis.state === 'ok') {
+      for (var x = 0; x < timeAxis.ticks.length; x++) {
+        var tick = timeAxis.ticks[x];
+        var txPos = toX(tick.x);
+        ctx.textAlign = x === 0 ? 'left' : x === timeAxis.ticks.length - 1 ? 'right' : 'center';
+        ctx.fillText(tick.label, txPos, plotBottom + 6);
+      }
+    } else if (timeAxis.state === 'clock-not-synced') {
+      ctx.textAlign = 'center';
+      ctx.fillText('clock not synced', (plotLeft + plotRight) / 2, plotBottom + 6);
+    }
+    ctx.textAlign = 'start';
+    ctx.textBaseline = 'alphabetic';
+
+    if (opts.captionEl) {
+      opts.captionEl.textContent = timeAxis.state === 'ok' ? timeAxis.caption : '';
+    }
+  }
+
   function fetchHistory() {
     return fetch('/api/history?points=180')
       .then(function (resp) {
@@ -239,6 +395,9 @@
           title: 'Ambient Light',
           color: '#1c7c3c',
           captionEl: lightCaptionEl,
+        });
+        drawLevelChart(document.getElementById('chart-level'), series, {
+          captionEl: levelCaptionEl,
         });
       })
       .catch(function (err) {
