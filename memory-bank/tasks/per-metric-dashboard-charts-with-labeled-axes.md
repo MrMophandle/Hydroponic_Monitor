@@ -838,6 +838,17 @@ and copy. Reconcile that seam before Phase 1 or the first build agent picks one 
   orchestrator's Commit Guard rule, this is NOT self-waived. Escalated to the human via
   `/bmb:build`'s `DECISION_NEEDED` return; commit `ac4aa5b` made locally on
   `feature/per-metric-dashboard-charts-with-labeled-axes` but **NOT pushed** pending the decision.
+- **Human decision (via `/bmb:build` coordinator, 2026-08-25)**: **WAIVED — Option 1 accepted.**
+  The human authorized the C2 waiver on the stated grounds: the task's own human-approved Test
+  Strategy pre-declared "Phase 3 — 0 new host tests, bench-verify-only"; the axis/tick/
+  segmentation logic is already pure-tested in `dashboard-logic.js` from Phases 1-2; `app.js`'s
+  changes are Canvas 2D draw calls with no new interpretive logic (confirmed by Code Review); the
+  project has no browser/DOM harness that could meaningfully test canvas drawing. This is a
+  **human escalation decision, not a self-waive** — the orchestrator raised `DECISION_NEEDED` per
+  the Commit Guard's no-override-flag policy and the human explicitly resolved it; Options 2
+  (extract pixel-math into `dashboard-logic.js`) and 3 (rework) were considered and declined.
+  Commit Guard checklist item: **resolved by human waiver**, not a script PASS. Branch pushed to
+  `origin/feature/per-metric-dashboard-charts-with-labeled-axes` following this decision.
 
 **`/bmb:build` Phase 1 — 2026-08-23**
 - Clean-tree gate clean; worktree confirmed inline (no separate worktree — checked out directly
