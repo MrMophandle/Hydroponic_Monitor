@@ -19,6 +19,8 @@ This file documents the technology stack, infrastructure, and tooling used in th
 > Device build (`pio run -e esp32-s3-devkitm-1`): SUCCESS at 32.6% RAM (106,692 B), 31.3% flash
 > (985,858 B); 0 warnings.
 >
+> **Status (2026-08-26)**: **per-metric-dashboard-charts-with-labeled-axes Phase 4 COMPLETE (FINAL PHASE).** Water level band-strip chart renderer implemented: `drawLevelChart()` renders five discrete level states (FULL/MID/LOW/FAULT/UNKNOWN) as horizontal colored band strips with diagonal-hatch pattern for FAULT/UNKNOWN states. Added `levelColor()` function with CSS-custom-property lookup (`LEVEL_COLOR_VARS`) and `drawHatch()` helper for hatching. JS tests: 67/67 PASS (`node --test test/web/*.test.mjs`). Native C tests: 71/71 PASS (`pio test -e native`). Device build: SUCCESS at 32.6% RAM (106,708 B), 31.5% flash (997,392 B); 0 warnings. Code review APPROVED (no blocking findings). Verification: linting clean (10 pre-existing unrelated cppcheck warnings), firmware build SUCCESS.
+>
 > **Status (2026-08-21)**: **onboard-status-led Phase 2 COMPLETE.** Extended `lib/device_status/` 
 > with reachability-fact tracking (`status_report_wifi()`, `status_report_http()`, `status_snapshot()`) 
 > + host-testable via ESP_PLATFORM/esp_shim.h pattern. Native test count: 71 tests
